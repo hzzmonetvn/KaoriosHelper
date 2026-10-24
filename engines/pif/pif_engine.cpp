@@ -1,0 +1,367 @@
+/*
+ * SPDX-License-Identifier: AGPL-3.0-only
+ * Copyright (C) 2026 HzzMonet / Kaorios Project
+ */
+
+#include "pif_engine.hpp"
+#include "logging.hpp"
+#include <fstream>
+#include <sys/stat.h>
+#include <cstring>
+#include <algorithm>
+
+#if defined(__ANDROID__)
+#include <android/log.h>
+#include <sys/system_properties.h>
+#include <dlfcn.h>
+#include "shadowhook.h"
+
+typedef void (*T_Callback)(void *cookie, const char *name, const char *value, uint32_t serial);
+
+static std::map<void *, T_Callback> g_callbacks;
+static std::mutex g_callbacks_mutex;
+static void (*o_system_property_read_callback)(const prop_info *, T_Callback, void *) = nullptr;
+
+#endif
+
+namespace kaorios {
+
+static std::map<std::string, std::string> s_active_spoof_props;
+static std::mutex s_active_props_mutex;
+
+PifEngine::PifEngine(std::string data_dir) : data_dir_(std::move(data_dir)) {}
+
+bool PifEngine::isEnabled() const {
+    std::string disabled_marker = data_dir_ + "/pif.disabled";
+    struct stat st{};
+    return stat(disabled_marker.c_str(), &st) != 0;
+}
+
+bool PifEngine::isTeeActive() const {
+    std::string tee_enabled_marker = data_dir_ + "/tee.enabled";
+    std::string keybox_file = data_dir_ + "/keybox.xml";
+    struct stat st_en{}, st_kb{};
+    return (stat(tee_enabled_marker.c_str(), &st_en) == 0 &&
+            stat(keybox_file.c_str(), &st_kb) == 0 &&
+            st_kb.st_size > 0);
+}
+
+bool PifEngine::shouldHandleApp(const std::string &process_name, jint uid) {
+    if (!isEnabled()) {
+        return false;
+    }
+
+    // PIF specifically targets Google Play Services and Play Store
+    return (process_name == "com.google.android.gms" ||
+            process_name == "com.google.android.gms.unstable" ||
+            process_name == "com.android.vending");
+}
+
+void PifEngine::onLoad(zygisk::Api *api, JNIEnv *env) {
+    api_ = api;
+    env_ = env;
+    LOGD("PIF Engine onLoad");
+}
+
+bool PifEngine::resolveSpoofedProperty(const std::string &name, const char *orig_value, std::string &out_value) {
+    std::lock_guard<std::mutex> lock(s_active_props_mutex);
+    if (s_active_spoof_props.empty()) {
+        return false;
+    }
+
+    // 1. Exact match
+    auto it = s_active_spoof_props.find(name);
+    if (it != s_active_spoof_props.end()) {
+        out_value = it->second;
+        return true;
+    }
+
+    // 2. Wildcard prefix/suffix match (e.g. *security_patch, *first_api_level)
+    for (const auto &[pattern, val] : s_active_spoof_props) {
+        if (pattern.length() > 1 && pattern.front() == '*') {
+            std::string_view suffix(pattern.data() + 1, pattern.length() - 1);
+            if (name.length() >= suffix.length() &&
+                name.compare(name.length() - suffix.length(), suffix.length(), suffix) == 0) {
+                out_value = val;
+                return true;
+            }
+        } else if (pattern.length() > 1 && pattern.back() == '*') {
+            std::string_view prefix(pattern.data(), pattern.length() - 1);
+            if (name.length() >= prefix.length() &&
+                name.compare(0, prefix.length(), prefix) == 0) {
+                out_value = val;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+#if defined(__ANDROID__)
+static void pif_modify_callback(void *cookie, const char *name, const char *value, uint32_t serial) {
+    if (!cookie || !name || !value) return;
+
+    T_Callback orig_cb = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_callbacks_mutex);
+        auto it = g_callbacks.find(cookie);
+        if (it == g_callbacks.end()) return;
+        orig_cb = it->second;
+    }
+
+    std::string spoofed_val;
+    const char *final_val = value;
+    if (PifEngine::resolveSpoofedProperty(name, value, spoofed_val)) {
+        final_val = spoofed_val.c_str();
+        LOGD("PIF [ShadowHook libc] [%s]: %s -> %s", name, value, final_val);
+    }
+
+    orig_cb(cookie, name, final_val, serial);
+}
+
+static void my_system_property_read_callback(const prop_info *pi, T_Callback callback, void *cookie) {
+    if (!pi || !callback || !cookie) {
+        if (o_system_property_read_callback && pi && callback) {
+            o_system_property_read_callback(pi, callback, cookie);
+        }
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_callbacks_mutex);
+        g_callbacks[cookie] = callback;
+    }
+
+    o_system_property_read_callback(pi, pif_modify_callback, cookie);
+}
+#endif
+
+void PifEngine::installPropertyHook() {
+    if (hook_installed_) return;
+
+#if defined(__ANDROID__)
+    int sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
+    if (sh_ret != 0 && sh_ret != SHADOWHOOK_ERRNO_PENDING) {
+        LOGW("PIF: shadowhook_init returned %d (errno %d)", sh_ret, shadowhook_get_errno());
+    }
+
+    void *sym_addr = dlsym(RTLD_DEFAULT, "__system_property_read_callback");
+    if (!sym_addr) {
+        LOGE("PIF: Could not resolve __system_property_read_callback via dlsym");
+        return;
+    }
+
+    void *handle = shadowhook_hook_sym_addr(
+        sym_addr,
+        reinterpret_cast<void *>(my_system_property_read_callback),
+        reinterpret_cast<void **>(&o_system_property_read_callback)
+    );
+
+    if (!handle) {
+        LOGE("PIF: Failed to hook __system_property_read_callback. ShadowHook errno: %d", shadowhook_get_errno());
+        return;
+    }
+
+    hook_installed_ = true;
+    LOGI("PIF: ShadowHook successfully intercepted __system_property_read_callback at %p (handle=%p)", sym_addr, handle);
+#else
+    hook_installed_ = true;
+    LOGI("PIF: [Mock] Native Bionic libc property hook registered");
+#endif
+}
+
+bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof_provider) {
+    std::string config_path = data_dir_ + "/pif.json";
+    struct stat st{};
+    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
+        LOGW("PIF config missing or empty: %s", config_path.c_str());
+        return false;
+    }
+
+    spoof_provider = 0;
+    spoof_props_ = 1;
+    spoof_build_ = 1;
+
+    std::ifstream file(config_path);
+    if (!file.is_open()) {
+        return false;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        size_t colon = line.find(':');
+        if (colon == std::string::npos) continue;
+
+        size_t k_start = line.find('"');
+        if (k_start == std::string::npos || k_start >= colon) continue;
+        size_t k_end = line.find('"', k_start + 1);
+        if (k_end == std::string::npos || k_end >= colon) continue;
+        std::string key = line.substr(k_start + 1, k_end - k_start - 1);
+
+        size_t v_start = line.find('"', colon + 1);
+        if (v_start != std::string::npos) {
+            size_t v_end = line.find('"', v_start + 1);
+            if (v_end != std::string::npos) {
+                props[key] = line.substr(v_start + 1, v_end - v_start - 1);
+                continue;
+            }
+        }
+
+        // Check for numeric flags
+        if (key == "spoofProvider") {
+            size_t num_pos = line.find_first_of("0123456789", colon + 1);
+            if (num_pos != std::string::npos) spoof_provider = line[num_pos] - '0';
+        } else if (key == "spoofProps") {
+            size_t num_pos = line.find_first_of("0123456789", colon + 1);
+            if (num_pos != std::string::npos) spoof_props_ = line[num_pos] - '0';
+        } else if (key == "spoofBuild") {
+            size_t num_pos = line.find_first_of("0123456789", colon + 1);
+            if (num_pos != std::string::npos) spoof_build_ = line[num_pos] - '0';
+        } else if (key == "DEVICE_INITIAL_SDK_INT") {
+            size_t num_pos = line.find_first_of("0123456789", colon + 1);
+            if (num_pos != std::string::npos) device_initial_sdk_int_ = std::atoi(line.c_str() + num_pos);
+        }
+    }
+
+    // Also populate native system properties corresponding to standard Android Build fields
+    // DroidGuard (libdroidguard.so) reads these directly from Bionic libc!
+    if (props.count("MODEL")) props["ro.product.model"] = props["MODEL"];
+    if (props.count("MANUFACTURER")) props["ro.product.manufacturer"] = props["MANUFACTURER"];
+    if (props.count("BRAND")) props["ro.product.brand"] = props["BRAND"];
+    if (props.count("DEVICE")) props["ro.product.device"] = props["DEVICE"];
+    if (props.count("PRODUCT")) props["ro.product.name"] = props["PRODUCT"];
+    if (props.count("FINGERPRINT")) props["ro.build.fingerprint"] = props["FINGERPRINT"];
+    if (props.count("ID")) props["ro.build.id"] = props["ID"];
+    if (props.count("TYPE")) props["ro.build.type"] = props["TYPE"];
+    if (props.count("TAGS")) props["ro.build.tags"] = props["TAGS"];
+    if (props.count("SECURITY_PATCH")) {
+        props["ro.build.version.security_patch"] = props["SECURITY_PATCH"];
+        props["*.security_patch"] = props["SECURITY_PATCH"];
+    }
+    if (props.count("RELEASE")) props["ro.build.version.release"] = props["RELEASE"];
+    if (props.count("INCREMENTAL")) props["ro.build.version.incremental"] = props["INCREMENTAL"];
+    if (device_initial_sdk_int_ > 0) {
+        std::string sdk_str = std::to_string(device_initial_sdk_int_);
+        props["ro.product.first_api_level"] = sdk_str;
+        props["*first_api_level"] = sdk_str;
+    }
+    // Hardened boot state properties required to satisfy CTS / Basic & Device Play Integrity
+    props["ro.boot.flash.locked"] = "1";
+    props["ro.boot.verifiedbootstate"] = "green";
+    props["ro.boot.vbmeta.device_state"] = "locked";
+
+    // Enforce hook ownership rule: if TEE is active, force spoofProvider = 0
+    if (isTeeActive()) {
+        if (spoof_provider != 0) {
+            LOGW("PIF: TEE Engine is active! Forcing spoofProvider = 0 to prevent KeyStore collision.");
+            spoof_provider = 0;
+        }
+    }
+
+    // Publish active properties for native libc hook
+    {
+        std::lock_guard<std::mutex> lock(s_active_props_mutex);
+        s_active_spoof_props = props;
+    }
+
+    return true;
+}
+
+void PifEngine::preAppSpecialize(zygisk::AppSpecializeArgs *args, const std::string &process_name) {
+    LOGI("PIF targeting process: %s", process_name.c_str());
+    config_loaded_ = loadConfig(cached_props_, cached_spoof_provider_);
+
+    if (api_) {
+        // Enforce root unmount in GMS process so DroidGuard cannot scan root mount namespaces
+        api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
+    }
+}
+
+void PifEngine::applyBuildField(JNIEnv *env, jclass build_class, const char *name, const std::string &val) {
+    if (!env || !build_class || val.empty()) return;
+    jfieldID fid = env->GetStaticFieldID(build_class, name, "Ljava/lang/String;");
+    if (fid) {
+        jstring jval = env->NewStringUTF(val.c_str());
+        env->SetStaticObjectField(build_class, fid, jval);
+        env->DeleteLocalRef(jval);
+    } else {
+        env->ExceptionClear();
+    }
+}
+
+void PifEngine::applyVersionField(JNIEnv *env, jclass version_class, const char *name, const std::string &val) {
+    if (!env || !version_class || val.empty()) return;
+    jfieldID fid = env->GetStaticFieldID(version_class, name, "Ljava/lang/String;");
+    if (fid) {
+        jstring jval = env->NewStringUTF(val.c_str());
+        env->SetStaticObjectField(version_class, fid, jval);
+        env->DeleteLocalRef(jval);
+    } else {
+        env->ExceptionClear();
+    }
+}
+
+void PifEngine::applyIntField(JNIEnv *env, jclass clazz, const char *name, int val) {
+    if (!env || !clazz || val <= 0) return;
+    jfieldID fid = env->GetStaticFieldID(clazz, name, "I");
+    if (fid) {
+        env->SetStaticIntField(clazz, fid, val);
+    } else {
+        env->ExceptionClear();
+    }
+}
+
+void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const std::string &process_name) {
+    if (!config_loaded_) {
+        config_loaded_ = loadConfig(cached_props_, cached_spoof_provider_);
+    }
+
+    if (!config_loaded_ || cached_props_.empty()) {
+        LOGW("PIF: No valid configuration found to apply");
+        return;
+    }
+
+    // 1. Install ByteDance ShadowHook for native libc property reads (DroidGuard interception)
+    if (spoof_props_ > 0) {
+        installPropertyHook();
+    }
+
+    // 2. Apply Java Build reflection for framework callers
+    if (spoof_build_ > 0 && env_) {
+        const auto &props = cached_props_;
+
+        jclass build_class = env_->FindClass("android/os/Build");
+        if (build_class) {
+            if (props.count("MANUFACTURER")) applyBuildField(env_, build_class, "MANUFACTURER", props.at("MANUFACTURER"));
+            if (props.count("MODEL")) applyBuildField(env_, build_class, "MODEL", props.at("MODEL"));
+            if (props.count("BRAND")) applyBuildField(env_, build_class, "BRAND", props.at("BRAND"));
+            if (props.count("DEVICE")) applyBuildField(env_, build_class, "DEVICE", props.at("DEVICE"));
+            if (props.count("PRODUCT")) applyBuildField(env_, build_class, "PRODUCT", props.at("PRODUCT"));
+            if (props.count("FINGERPRINT")) applyBuildField(env_, build_class, "FINGERPRINT", props.at("FINGERPRINT"));
+            if (props.count("ID")) applyBuildField(env_, build_class, "ID", props.at("ID"));
+            if (props.count("TYPE")) applyBuildField(env_, build_class, "TYPE", props.at("TYPE"));
+            if (props.count("TAGS")) applyBuildField(env_, build_class, "TAGS", props.at("TAGS"));
+            env_->DeleteLocalRef(build_class);
+        } else {
+            env_->ExceptionClear();
+        }
+
+        jclass version_class = env_->FindClass("android/os/Build$VERSION");
+        if (version_class) {
+            if (props.count("RELEASE")) applyVersionField(env_, version_class, "RELEASE", props.at("RELEASE"));
+            if (props.count("INCREMENTAL")) applyVersionField(env_, version_class, "INCREMENTAL", props.at("INCREMENTAL"));
+            if (props.count("SECURITY_PATCH")) applyVersionField(env_, version_class, "SECURITY_PATCH", props.at("SECURITY_PATCH"));
+            if (device_initial_sdk_int_ > 0) {
+                applyIntField(env_, version_class, "DEVICE_INITIAL_SDK_INT", device_initial_sdk_int_);
+            }
+            env_->DeleteLocalRef(version_class);
+        } else {
+            env_->ExceptionClear();
+        }
+    }
+
+    LOGI("PIF properties and native hooks applied successfully in %s", process_name.c_str());
+}
+
+} // namespace kaorios

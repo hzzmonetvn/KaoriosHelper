@@ -1,0 +1,25 @@
+# Build directories
+build/
+out/
+
+# Object and library files
+*.o
+*.a
+*.so
+module/helperctl
+module/bin/
+module/zygisk/*.so
+!module/zygisk/.gitkeep
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor and IDE metadata
+.vscode/
+.idea/
+*.swp
+*~
+
+# Temporary test directories
+/tmp/kaorios_*

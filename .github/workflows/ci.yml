@@ -1,0 +1,31 @@
+name: KaoriosHelper CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-host:
+    name: Host Tests (C++20 & Python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Build Environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++-13 python3
+
+      - name: Build & Run Native C++ Tests
+        run: |
+          mkdir -p build && cd build
+          cmake -DCMAKE_CXX_COMPILER=g++-13 ..
+          make -j$(nproc)
+          ./test_native
+
+      - name: Run Python Management Test Suite
+        run: |
+          python3 -m unittest discover -s tests -p "test_*.py"

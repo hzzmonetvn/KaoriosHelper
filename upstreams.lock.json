@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "1.0.0",
+  "generated_at": "2026-10-24T16:20:00Z",
+  "comment": "KaoriosHelper Pinned Upstream Repositories and Components",
+  "upstreams": {
+    "hma-oss": {
+      "repository": "https://github.com/frknkrc44/HMA-OSS.git",
+      "default_branch": "master",
+      "pinned_tag": "oss-173",
+      "pinned_commit": "1fe86ce2b4a6f21197e6e92d15e054d609b7d77c",
+      "license": "AGPL-3.0-only",
+      "spdx_id": "AGPL-3.0-only",
+      "role": "HMA Engine: Application visibility, package manager filtering, installer source spoofing, and settings replacement",
+      "verified_integrity": "verified",
+      "submodules": {
+        "external/AndroidVMTools": {
+          "repository": "https://github.com/aerath-stuff/AndroidVMTools.git",
+          "pinned_commit": "6fa2d5cbbf51c96fb81a9b5d96fdd74beac4aafe",
+          "license": "MIT"
+        }
+      },
+      "build_dependencies": {
+        "zygoteloader": {
+          "repository": "https://github.com/aerath-stuff/ZygoteLoader.git",
+          "pinned_commit": "2a2160fea2ed3bdbcb84fe48114718408731d9ad",
+          "license": "MIT"
+        },
+        "panamaport": {
+          "repository": "https://github.com/aerath-stuff/PanamaPort.git",
+          "pinned_commit": "c0d8fa431e9a747dd974b8f8c02695dc3ae38b6f",
+          "license": "MIT / GPL-2.0-with-classpath-exception"
+        }
+      }
+    },
+    "play-integrity-fork": {
+      "repository": "https://github.com/osm0sis/PlayIntegrityFork.git",
+      "default_branch": "master",
+      "pinned_tag": "v18",
+      "pinned_commit": "23ec56c2440c4fd1a5e893a23ef7861d6366a828",
+      "release_commit_v18": "6d2307ff5037519982205e66bda1132d0d8cc4da",
+      "license": "GPL-3.0-only",
+      "spdx_id": "GPL-3.0-only",
+      "role": "PIF Engine: GMS and DroidGuard property configuration, target process selection, and system property filtering",
+      "verified_integrity": "verified",
+      "third_party": {
+        "shadowhook": {
+          "vendor": "ByteDance",
+          "license": "Apache-2.0"
+        },
+        "nlohmann-json": {
+          "vendor": "Niels Lohmann",
+          "license": "MIT"
+        }
+      }
+    },
+    "always-strong": {
+      "repository": "https://gitlab.com/Evokerr/AlwaysStrong.git",
+      "default_branch": "main",
+      "pinned_tag": "v1.0.5",
+      "pinned_commit": "95ccd2add35a2db2721b9e5111f13917f7dbac0c",
+      "release_commit_v1.0.5": "72309a7c5117f28f44a1cd72b89ff1c5302208bf",
+      "license": "GPL-3.0-only",
+      "spdx_id": "GPL-3.0-only",
+      "role": "Integration Architecture Reference: Coordination of PIF and Keystore Attestation engines, package watcher, and conflict detection",
+      "verified_integrity": "verified",
+      "native_tools": {
+        "watcher": "native/watcher (Rust)",
+        "asfetch": "native/asfetch (Rust)"
+      }
+    },
+    "tee-simulator-rs": {
+      "repository": "https://github.com/Enginex0/TEESimulator-RS.git",
+      "default_branch": "master",
+      "pinned_tag": "v6.0.1-307",
+      "pinned_commit": "6d241e56d6e8146cd67ed4ac3dadc9c632969549",
+      "license": "GPL-3.0-only",
+      "spdx_id": "GPL-3.0-only",
+      "role": "TEE Engine: Android Keystore2 / KeyMint hardware attestation simulation using keybox certificate chains",
+      "verified_integrity": "verified"
+    },
+    "copg": {
+      "repository": "https://github.com/AlirezaParsi/COPG.git",
+      "default_branch": "JSON",
+      "pinned_commit": "07c6482eaf83bf93697e88648491abf9053121c6",
+      "version_note": "Historical COPG 5.1.1 source release containing complete native C++ implementation (src/spoof_module.cpp and src/unified_controller.cpp). Subsequent commits deleted src/ for closed-source monetization.",
+      "license": "Apache-2.0",
+      "spdx_id": "Apache-2.0",
+      "role": "COPG Engine: Per-app device profile spoofing, Build property overrides, CPU info spoofing, and game-specific customization",
+      "verified_integrity": "verified",
+      "bundled_licenses": {
+        "nlohmann-json": "MIT",
+        "zygisk.hpp": "ISC",
+        "atexit.cpp": "BSD-2-Clause"
+      }
+    }
+  }
+}
