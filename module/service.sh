@@ -20,36 +20,69 @@ done
 
 log "Boot completed. Initializing RuntimeManager..."
 
-# Re-assert lock state properties after late vendor init runs
-if [ -f "$MODDIR/post-fs-data.sh" ]; then
-  sh "$MODDIR/post-fs-data.sh" 2>/dev/null || true
-fi
-
 # ── Status Initialization ───────────────────────────────────────────────────
 if [ -x "$MODDIR/helperctl" ]; then
   "$MODDIR/helperctl" reload all >/dev/null 2>&1 || true
 else
   cat > "$DATA_DIR/status.json" << EOF
 {
+  "schemaVersion": 1,
   "moduleVersion": "$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null || echo "v1.0.0")",
+  "moduleState": "$([ -f "$MODDIR/disable" ] && echo "DISABLED" || echo "ACTIVE")",
   "bootCompleted": true,
   "serviceRunning": true,
   "engines": {
     "hma": {
+      "installed": true,
       "enabled": $([ ! -f "$DATA_DIR/hma.disabled" ] && echo "true" || echo "false"),
-      "status": $([ ! -f "$DATA_DIR/hma.disabled" ] && echo '"CONFIGURED_NOT_HOOKED"' || echo '"DISABLED"')
+      "configValid": $([ -s "$DATA_DIR/hma.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": $([ -s "$DATA_DIR/classes.dex" ] || [ -s "$MODDIR/classes.dex" ] && echo "true" || echo "false"),
+      "hookInitialized": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/hma.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": false,
+      "lastError": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"classes.dex missing: upstream HMA DEX payload not bundled"' || echo '""'),
+      "status": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
+      "details": "system_server in-process protection"
     },
     "pif": {
+      "installed": true,
       "enabled": $([ ! -f "$DATA_DIR/pif.disabled" ] && echo "true" || echo "false"),
-      "status": $([ ! -f "$DATA_DIR/pif.disabled" ] && echo '"PARTIALLY_APPLIED"' || echo '"DISABLED"')
+      "configValid": $([ -s "$DATA_DIR/pif.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": true,
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/pif.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target process specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "details": "Play Integrity property interceptor"
     },
     "tee": {
+      "installed": true,
       "enabled": $([ -f "$DATA_DIR/tee.enabled" ] && echo "true" || echo "false"),
-      "status": $([ -f "$DATA_DIR/tee.enabled" ] && [ -s "$DATA_DIR/keybox.xml" ] && echo '"STUB_NO_KEYMINT_AIDL"' || echo '"NOT_CONFIGURED"')
+      "configValid": $([ -s "$DATA_DIR/keybox.xml" ] && echo "true" || echo "false"),
+      "runtimeAvailable": false,
+      "hookInitialized": "INCOMPLETE_RUNTIME",
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/tee.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": false,
+      "lastError": "Keystore2 system daemon interception runtime unavailable",
+      "status": "INCOMPLETE_RUNTIME",
+      "details": "Keybox XML validated, Keystore2 daemon ptrace/AIDL is not bundled"
     },
     "copg": {
+      "installed": true,
       "enabled": $([ -f "$DATA_DIR/copg.enabled" ] && echo "true" || echo "false"),
-      "status": $([ -f "$DATA_DIR/copg.enabled" ] && echo '"TARGETS_CONFIGURED_STUB_HOOK"' || echo '"NOT_CONFIGURED"')
+      "configValid": $([ -s "$DATA_DIR/spoof.json" ] || [ -s "$DATA_DIR/COPG.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": true,
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/copg.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target app specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "details": "Game profile virtualization"
     }
   },
   "lastUpdate": "$(date '+%Y-%m-%d %H:%M:%S')"

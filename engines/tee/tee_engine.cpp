@@ -41,44 +41,125 @@ KeyboxInfo TeeEngine::parseKeybox() const {
     buffer << file.rdbuf();
     std::string content = buffer.str();
 
-    // Fast XML tag scanner
-    bool has_keybox_root = (content.find("<KeyboxContent") != std::string::npos ||
-                            content.find("<Keybox") != std::string::npos);
-    if (!has_keybox_root) {
-        LOGW("TEE: keybox.xml missing root <KeyboxContent> element");
-        return info;
-    }
+    // Structural XML Validator & Tokenizer
+    // Validates balanced element hierarchy, tags, attributes, and certificate structure
+    // Note: This performs XML structural validation only, NOT cryptographic validation.
+    std::vector<std::string> tag_stack;
+    std::string current_key_algorithm;
+    bool has_keybox_root = false;
+    bool in_device_id = false;
+    std::string device_id_buffer;
 
-    if (content.find("algorithm=\"ecdsa\"") != std::string::npos ||
-        content.find("algorithm=\"ec\"") != std::string::npos ||
-        content.find("EC PRIVATE KEY") != std::string::npos) {
-        info.has_ecdsa = true;
-    }
+    size_t i = 0;
+    const size_t len = content.size();
+    bool xml_error = false;
 
-    if (content.find("algorithm=\"rsa\"") != std::string::npos ||
-        content.find("RSA PRIVATE KEY") != std::string::npos) {
-        info.has_rsa = true;
-    }
+    while (i < len) {
+        if (content[i] == '<') {
+            // Check for XML declaration or comment <?xml ... ?> or <!-- ... -->
+            if (i + 1 < len && content[i + 1] == '?') {
+                size_t close_decl = content.find("?>", i + 2);
+                if (close_decl == std::string::npos) { xml_error = true; break; }
+                i = close_decl + 2;
+                continue;
+            }
+            if (i + 3 < len && content.substr(i, 4) == "<!--") {
+                size_t close_comment = content.find("-->", i + 4);
+                if (close_comment == std::string::npos) { xml_error = true; break; }
+                i = close_comment + 3;
+                continue;
+            }
 
-    // Count certificates
-    size_t pos = 0;
-    while ((pos = content.find("<Certificate", pos)) != std::string::npos) {
-        info.cert_count++;
-        pos += 12;
-    }
+            size_t tag_end = content.find('>', i);
+            if (tag_end == std::string::npos) {
+                xml_error = true;
+                break;
+            }
 
-    // Check for DeviceID
-    size_t id_start = content.find("<DeviceId>");
-    if (id_start != std::string::npos) {
-        size_t id_end = content.find("</DeviceId>", id_start);
-        if (id_end != std::string::npos) {
-            info.device_id = content.substr(id_start + 10, id_end - id_start - 10);
+            std::string tag_body = content.substr(i + 1, tag_end - i - 1);
+            i = tag_end + 1;
+
+            if (tag_body.empty()) { xml_error = true; break; }
+
+            bool is_closing = (tag_body[0] == '/');
+            bool is_self_closing = (!tag_body.empty() && tag_body.back() == '/');
+
+            if (is_closing) {
+                std::string closing_name = tag_body.substr(1);
+                size_t ws = closing_name.find_first_of(" \t\r\n");
+                if (ws != std::string::npos) closing_name = closing_name.substr(0, ws);
+
+                if (tag_stack.empty() || tag_stack.back() != closing_name) {
+                    LOGW("TEE: Unbalanced closing XML tag </%s> in keybox.xml", closing_name.c_str());
+                    xml_error = true;
+                    break;
+                }
+
+                if (closing_name == "Key") {
+                    current_key_algorithm.clear();
+                } else if (closing_name == "DeviceId") {
+                    in_device_id = false;
+                    info.device_id = device_id_buffer;
+                }
+
+                tag_stack.pop_back();
+            } else {
+                if (is_self_closing) {
+                    tag_body.pop_back();
+                }
+
+                std::stringstream ss(tag_body);
+                std::string tag_name;
+                ss >> tag_name;
+
+                if (tag_name == "KeyboxContent" || tag_name == "Keybox") {
+                    if (tag_stack.empty()) {
+                        has_keybox_root = true;
+                    }
+                }
+
+                if (tag_name == "Key") {
+                    std::string attr;
+                    while (ss >> attr) {
+                        if (attr.rfind("algorithm=", 0) == 0) {
+                            std::string algo = attr.substr(10);
+                            if (algo.size() >= 2 && (algo.front() == '"' || algo.front() == '\'')) {
+                                algo = algo.substr(1, algo.size() - 2);
+                            }
+                            std::transform(algo.begin(), algo.end(), algo.begin(), ::tolower);
+                            current_key_algorithm = algo;
+                            if (algo == "ecdsa" || algo == "ec") info.has_ecdsa = true;
+                            if (algo == "rsa") info.has_rsa = true;
+                        }
+                    }
+                } else if (tag_name == "Certificate") {
+                    info.cert_count++;
+                } else if (tag_name == "DeviceId") {
+                    in_device_id = true;
+                    device_id_buffer.clear();
+                }
+
+                if (!is_self_closing) {
+                    tag_stack.push_back(tag_name);
+                }
+            }
+        } else {
+            if (in_device_id) {
+                if (content[i] != '\r' && content[i] != '\n' && content[i] != '\t' && content[i] != ' ') {
+                    device_id_buffer += content[i];
+                }
+            }
+            i++;
         }
     }
 
-    // Must have at least one valid key type and at least one certificate in chain
-    if ((info.has_ecdsa || info.has_rsa) && info.cert_count > 0) {
-        info.valid = true;
+    // Structural acceptance: well-formed balanced XML, recognized Keybox root,
+    // key algorithm specification, and certificate chain count.
+    // This is strictly XML syntax and structural validation, NOT cryptographic chain validation.
+    if (!xml_error && tag_stack.empty() && has_keybox_root) {
+        if ((info.has_ecdsa || info.has_rsa) && info.cert_count > 0) {
+            info.valid = true;
+        }
     }
 
     // Secure zeroization of local content buffer
@@ -91,8 +172,10 @@ bool TeeEngine::hasValidKeybox() const {
 }
 
 bool TeeEngine::isAttestationSimulationActive() const {
-    if (!isEnabled()) return false;
-    return hasValidKeybox();
+    // TEE runtime status remains INCOMPLETE_RUNTIME.
+    // Structural XML parsing does not perform cryptographic attestation or certificate validation.
+    // Keystore2 system daemon interception is not bundled.
+    return false;
 }
 
 bool TeeEngine::shouldHandleApp(const std::string &process_name, jint uid) {
@@ -126,12 +209,14 @@ void TeeEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
         return;
     }
 
-    LOGI("TEE: Hardware KeyStore / KeyMint attestation simulation active for %s (ECDSA=%d, RSA=%d, certs=%zu)",
+    LOGI("TEE: Keybox XML structurally validated for %s (ECDSA=%d, RSA=%d, certs=%zu). "
+         "Note: Keystore2 system daemon interception is not bundled; runtime status is INCOMPLETE_RUNTIME.",
          process_name.c_str(), info.has_ecdsa, info.has_rsa, info.cert_count);
 
     // Note: Keystore2 (/system/bin/keystore2, UID 1017) runs as an isolated system daemon
-    // outside Zygote. Hardware attestation certificates are provided either via the background
-    // TEE supervisor daemon or client-side Binder interception.
+    // outside Zygote. Structural XML parsing of keybox.xml does NOT perform cryptographic
+    // certificate chain validation or root-of-trust verification. Since Keystore2 daemon
+    // interception is not bundled, TEE runtime status remains INCOMPLETE_RUNTIME.
 }
 
 } // namespace kaorios

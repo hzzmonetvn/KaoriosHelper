@@ -16,6 +16,8 @@
 #include <string>
 #include <sys/socket.h>
 #include <sys/mount.h>
+#include <sys/stat.h>
+#include <signal.h>
 #include <sched.h>
 #include <fcntl.h>
 #include <cerrno>
@@ -83,10 +85,23 @@ static void companion_handler(int client_socket) {
 
     // Helper to execute operations inside target mount namespace
     auto run_in_target_ns = [&](auto &&fn) -> int {
-        if (target_pid <= 0) {
-            LOGW("KaoriosHelper companion: target_pid <= 0, refusing to operate in root daemon namespace");
+        if (target_pid <= 1) {
+            LOGW("KaoriosHelper companion: target_pid <= 1 (%d), refusing to operate", target_pid);
             return -1;
         }
+
+        // Check caller identity: UID 0 indicates unspecialized Zygote process
+        if (cr.uid == 0) {
+            LOGW("KaoriosHelper companion: caller uid is 0 (unspecialized Zygote child); refusing namespace operations");
+            return -1;
+        }
+
+        // Check if target process is still alive (guard against PID reuse / race)
+        if (kill(target_pid, 0) != 0) {
+            LOGW("KaoriosHelper companion: target pid=%d is no longer alive: %s", target_pid, strerror(errno));
+            return -1;
+        }
+
         char ns_path[64];
         snprintf(ns_path, sizeof(ns_path), "/proc/%d/ns/mnt", target_pid);
         int target_ns = open(ns_path, O_RDONLY | O_CLOEXEC);
@@ -94,12 +109,44 @@ static void companion_handler(int client_socket) {
             LOGW("KaoriosHelper companion: failed to open target mnt_ns %s: %s", ns_path, strerror(errno));
             return -1;
         }
+
+        struct stat target_st{};
+        if (fstat(target_ns, &target_st) != 0) {
+            LOGW("KaoriosHelper companion: failed to stat target mnt_ns: %s", strerror(errno));
+            close(target_ns);
+            return -1;
+        }
+
+        // Check if target mount namespace is shared with PID 1 (init / system root)
+        int root_ns = open("/proc/1/ns/mnt", O_RDONLY | O_CLOEXEC);
+        if (root_ns >= 0) {
+            struct stat root_st{};
+            if (fstat(root_ns, &root_st) == 0 && target_st.st_ino == root_st.st_ino) {
+                LOGE("KaoriosHelper companion: Refusing mount operation: target pid=%d shares mount namespace with PID 1/root (inode=%lu). App specialization has not unshared mount namespace!",
+                     target_pid, (unsigned long)target_st.st_ino);
+                close(target_ns);
+                close(root_ns);
+                return -1;
+            }
+            close(root_ns);
+        }
+
         int self_ns = open("/proc/self/ns/mnt", O_RDONLY | O_CLOEXEC);
         if (self_ns < 0) {
             LOGW("KaoriosHelper companion: failed to open self mnt_ns: %s", strerror(errno));
             close(target_ns);
             return -1;
         }
+
+        struct stat self_st{};
+        if (fstat(self_ns, &self_st) == 0 && target_st.st_ino == self_st.st_ino) {
+            LOGE("KaoriosHelper companion: Refusing mount operation: target pid=%d shares mount namespace with companion daemon (inode=%lu)",
+                 target_pid, (unsigned long)target_st.st_ino);
+            close(target_ns);
+            close(self_ns);
+            return -1;
+        }
+
         if (setns(target_ns, CLONE_NEWNS) != 0) {
             LOGW("KaoriosHelper companion: setns to target failed: %s", strerror(errno));
             close(target_ns);
@@ -114,7 +161,9 @@ static void companion_handler(int client_socket) {
         int r = fn();
 
         if (setns(self_ns, CLONE_NEWNS) != 0) {
-            LOGE("KaoriosHelper companion: FATAL failed to restore self mnt_ns: %s", strerror(errno));
+            LOGE("KaoriosHelper companion: FATAL failed to restore self mnt_ns: %s. Terminating companion immediately to prevent namespace corruption.", strerror(errno));
+            close(self_ns);
+            _exit(1);
         }
         close(self_ns);
         return r;

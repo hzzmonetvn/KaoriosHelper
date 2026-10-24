@@ -9,15 +9,94 @@
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
+
+#if __has_include(<nlohmann/json.hpp>)
+#include <nlohmann/json.hpp>
+#elif __has_include("../../third_party/json/nlohmann/json.hpp")
+#include "../../third_party/json/nlohmann/json.hpp"
+#endif
 
 #if defined(__ANDROID__)
 #include <sys/system_properties.h>
+
+static int (*o_copg_system_property_get)(const char *name, char *value) = nullptr;
+
+static int my_copg_system_property_get(const char *name, char *value) {
+    if (!name || !value) {
+        if (o_copg_system_property_get) return o_copg_system_property_get(name, value);
+        return -1;
+    }
+
+    kaorios::CopgEngine *engine = kaorios::CopgEngine::getActiveInstance();
+    if (engine) {
+        std::string override_val;
+        if (engine->resolvePropertyOverride(name, override_val)) {
+            size_t len = std::min(override_val.size(), static_cast<size_t>(PROP_VALUE_MAX - 1));
+            memcpy(value, override_val.c_str(), len);
+            value[len] = '\0';
+            LOGD("COPG [PLT Hook] [%s]: -> %s", name, value);
+            return static_cast<int>(len);
+        }
+    }
+
+    if (o_copg_system_property_get) {
+        return o_copg_system_property_get(name, value);
+    }
+    return -1;
+}
 #endif
 
 namespace kaorios {
+
+static CopgEngine *s_copg_active_instance = nullptr;
+
+CopgEngine* CopgEngine::getActiveInstance() {
+    return s_copg_active_instance;
+}
+
+bool CopgEngine::resolvePropertyOverride(const std::string &name, std::string &out_value) const {
+    if (!active_for_current_process_) return false;
+
+    // 1. Explicit property overrides map
+    auto it = current_device_info_.prop_overrides.find(name);
+    if (it != current_device_info_.prop_overrides.end()) {
+        out_value = it->second;
+        return true;
+    }
+
+    // 2. Standard Android system property mappings
+    if (name == "ro.product.model" && !current_device_info_.model.empty()) {
+        out_value = current_device_info_.model;
+        return true;
+    }
+    if (name == "ro.product.brand" && !current_device_info_.brand.empty()) {
+        out_value = current_device_info_.brand;
+        return true;
+    }
+    if (name == "ro.product.manufacturer" && !current_device_info_.manufacturer.empty()) {
+        out_value = current_device_info_.manufacturer;
+        return true;
+    }
+    if (name == "ro.product.device" && !current_device_info_.device.empty()) {
+        out_value = current_device_info_.device;
+        return true;
+    }
+    if (name == "ro.product.name" && !current_device_info_.product.empty()) {
+        out_value = current_device_info_.product;
+        return true;
+    }
+    if (name == "ro.build.fingerprint" && !current_device_info_.fingerprint.empty()) {
+        out_value = current_device_info_.fingerprint;
+        return true;
+    }
+
+    return false;
+}
 
 CopgEngine::CopgEngine(std::string data_dir) : data_dir_(std::move(data_dir)) {}
 
@@ -89,55 +168,144 @@ bool CopgEngine::reloadConfigIfNeeded(bool force) {
         return false;
     }
 
-    target_packages_.clear();
-    cpu_blacklist_.clear();
-    cpu_only_packages_.clear();
-    package_configs_.clear();
-
     std::stringstream buffer;
     buffer << file.rdbuf();
     std::string content = buffer.str();
 
-    // Parse simple configuration values
-    // Detect default device profile
-    CopgDeviceInfo default_info;
-    default_info.model = "SM-S928B";
-    default_info.brand = "samsung";
-    default_info.manufacturer = "samsung";
-    default_info.device = "e3q";
-    default_info.product = "e3qx";
-    default_info.fingerprint = "samsung/e3qx/e3q:14/UP1A.231005.007/S928BXXU1AXB5:user/release-keys";
-    default_info.release = "14";
-    default_info.sdk_int = 34;
-
-    // Scan for packages in JSON content
-    size_t pos = 0;
-    while (pos < content.size()) {
-        size_t q1 = content.find('"', pos);
-        if (q1 == std::string::npos) break;
-        size_t q2 = content.find('"', q1 + 1);
-        if (q2 == std::string::npos) break;
-        std::string token = content.substr(q1 + 1, q2 - q1 - 1);
-
-        if (token.find('.') != std::string::npos &&
-            token.find('/') == std::string::npos &&
-            isPackageAllowed(token)) {
-            target_packages_.insert(token);
-            CopgPackageFlags flags;
-            flags.needs_device_spoof = true;
-            flags.needs_cpu_mount = true;
-            flags.needs_plt_hook = true;
-            flags.needs_android_id = true;
-
-            CopgDeviceInfo info = default_info;
-            info.android_id = "a1b2c3d4e5f60718";
-            info.should_spoof_android_id = true;
-            package_configs_[token] = {info, flags};
-        }
-        pos = q2 + 1;
+    auto j = nlohmann::json::parse(content, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+        LOGW("COPG: Malformed JSON in %s; retaining existing known-good config", config_path.c_str());
+        return false;
     }
 
+    // Check global enablement
+    if (j.contains("enabled") && j["enabled"].is_boolean() && !j["enabled"].get<bool>()) {
+        LOGI("COPG: Feature globally disabled in %s", config_path.c_str());
+        target_packages_.clear();
+        package_configs_.clear();
+        last_config_mtime_ = st.st_mtime;
+        return true;
+    }
+
+    std::set<std::string> new_target_packages;
+    std::map<std::string, std::pair<CopgDeviceInfo, CopgPackageFlags>> new_package_configs;
+    std::set<std::string> new_cpu_blacklist;
+    std::set<std::string> new_cpu_only_packages;
+
+    // 1. Schema-aware parsing of profiles / packages object
+    const nlohmann::json *profiles_obj = nullptr;
+    if (j.contains("profiles") && j["profiles"].is_object()) {
+        profiles_obj = &j["profiles"];
+    } else if (j.contains("packages") && j["packages"].is_object()) {
+        profiles_obj = &j["packages"];
+    }
+
+    if (profiles_obj) {
+        for (auto &[pkg_name, prof] : profiles_obj->items()) {
+            if (pkg_name.find('.') == std::string::npos || pkg_name.find('/') != std::string::npos) {
+                LOGW("COPG: Skipping invalid package identifier: %s", pkg_name.c_str());
+                continue;
+            }
+            if (!isPackageAllowed(pkg_name)) {
+                continue;
+            }
+            if (!prof.is_object()) continue;
+
+            if (prof.contains("enabled") && prof["enabled"].is_boolean() && !prof["enabled"].get<bool>()) {
+                continue;
+            }
+
+            CopgDeviceInfo info;
+            CopgPackageFlags flags;
+
+            flags.needs_device_spoof = prof.value("device_spoof", true);
+            flags.needs_cpu_mount = prof.value("cpu_spoof", false); // Default false per Priority 4
+            flags.needs_plt_hook = prof.value("plt_hook", false);
+
+            if (prof.contains("model") && prof["model"].is_string()) info.model = prof["model"].get<std::string>();
+            if (prof.contains("brand") && prof["brand"].is_string()) info.brand = prof["brand"].get<std::string>();
+            if (prof.contains("manufacturer") && prof["manufacturer"].is_string()) info.manufacturer = prof["manufacturer"].get<std::string>();
+            if (prof.contains("device") && prof["device"].is_string()) info.device = prof["device"].get<std::string>();
+            if (prof.contains("product") && prof["product"].is_string()) info.product = prof["product"].get<std::string>();
+            if (prof.contains("fingerprint") && prof["fingerprint"].is_string()) info.fingerprint = prof["fingerprint"].get<std::string>();
+            if (prof.contains("release") && prof["release"].is_string()) info.release = prof["release"].get<std::string>();
+            if (prof.contains("serial") && prof["serial"].is_string()) {
+                info.serial = prof["serial"].get<std::string>();
+                info.should_spoof_serial = !info.serial.empty();
+            }
+            if (prof.contains("sdk_int") && prof["sdk_int"].is_number_integer()) {
+                info.sdk_int = prof["sdk_int"].get<int>();
+                info.should_spoof_sdk_int = (info.sdk_int > 0);
+            }
+
+            // Android ID spoofing: ONLY if explicitly specified in JSON!
+            if (prof.contains("android_id") && prof["android_id"].is_string()) {
+                info.android_id = prof["android_id"].get<std::string>();
+                bool aid_flag = prof.value("android_id_spoof", true);
+                info.should_spoof_android_id = (aid_flag && !info.android_id.empty());
+                flags.needs_android_id = info.should_spoof_android_id;
+            }
+
+            // Custom property overrides
+            if (prof.contains("props") && prof["props"].is_object()) {
+                for (auto &[pk, pv] : prof["props"].items()) {
+                    if (pv.is_string()) {
+                        info.prop_overrides[pk] = pv.get<std::string>();
+                    }
+                }
+            }
+
+            new_target_packages.insert(pkg_name);
+            new_package_configs[pkg_name] = {info, flags};
+        }
+    }
+
+    // 2. Also parse top-level string arrays (e.g. PACKAGES_GENSHIN, TARGETS, packages)
+    for (auto &[key, val] : j.items()) {
+        if (val.is_array()) {
+            for (const auto &item : val) {
+                if (item.is_string()) {
+                    std::string pkg_name = item.get<std::string>();
+                    if (pkg_name.find('.') != std::string::npos &&
+                        pkg_name.find('/') == std::string::npos &&
+                        isPackageAllowed(pkg_name)) {
+                        new_target_packages.insert(pkg_name);
+                        if (new_package_configs.find(pkg_name) == new_package_configs.end()) {
+                            CopgDeviceInfo info;
+                            CopgPackageFlags flags;
+                            flags.needs_device_spoof = true;
+                            flags.needs_cpu_mount = false; // Priority 4: disabled by default
+                            flags.needs_plt_hook = true;
+                            flags.needs_android_id = false;
+                            new_package_configs[pkg_name] = {info, flags};
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Parse cpu_spoof block
+    if (j.contains("cpu_spoof") && j["cpu_spoof"].is_object()) {
+        const auto &cs = j["cpu_spoof"];
+        if (cs.contains("blacklist") && cs["blacklist"].is_array()) {
+            for (const auto &item : cs["blacklist"]) {
+                if (item.is_string()) new_cpu_blacklist.insert(item.get<std::string>());
+            }
+        }
+        if (cs.contains("cpu_only_packages") && cs["cpu_only_packages"].is_array()) {
+            for (const auto &item : cs["cpu_only_packages"]) {
+                if (item.is_string()) new_cpu_only_packages.insert(item.get<std::string>());
+            }
+        }
+    }
+
+    target_packages_ = std::move(new_target_packages);
+    package_configs_ = std::move(new_package_configs);
+    cpu_blacklist_ = std::move(new_cpu_blacklist);
+    cpu_only_packages_ = std::move(new_cpu_only_packages);
     last_config_mtime_ = st.st_mtime;
+
     LOGI("COPG reloaded configuration: %zu target packages", target_packages_.size());
     return true;
 }
@@ -166,16 +334,24 @@ void CopgEngine::onLoad(zygisk::Api *api, JNIEnv *env) {
 void CopgEngine::installPltPropertyHooks(const std::string &process_name) {
     if (!api_) return;
 
+    size_t libraries_discovered = 0;
+    size_t hooks_attempted = 0;
+    size_t hooks_succeeded = 0;
+    bool commit_succeeded = false;
+
 #if defined(__ANDROID__)
     // Scan /proc/self/maps to identify mapped libraries and register PLT hooks
     FILE *maps = fopen("/proc/self/maps", "r");
-    if (!maps) return;
+    if (!maps) {
+        LOGW("COPG: Cannot open /proc/self/maps for PLT hook scan in %s: %s", process_name.c_str(), strerror(errno));
+        return;
+    }
 
     char line[512];
-    size_t hooked_count = 0;
+    std::set<std::pair<dev_t, unsigned long>> hooked_inodes;
 
     while (fgets(line, sizeof(line), maps)) {
-        uintptr_t start, end, offset;
+        unsigned long start = 0, end = 0, offset = 0;
         char perms[8];
         int dev_major, dev_minor;
         unsigned long inode;
@@ -183,21 +359,49 @@ void CopgEngine::installPltPropertyHooks(const std::string &process_name) {
 
         int matched = sscanf(line, "%lx-%lx %7s %lx %x:%x %lu %255s",
                              &start, &end, perms, &offset, &dev_major, &dev_minor, &inode, path);
-        if (matched >= 7 && inode > 0 && perms[2] == 'x') {
-            dev_t dev = makedev(dev_major, dev_minor);
-            // Register PLT hook for target binary / native libraries
-            if (path[0] != '\0' && strstr(path, ".so") != nullptr && strstr(path, "libc.so") == nullptr) {
-                // Register PLT hooks for libc system property queries
-                hooked_count++;
+        if (matched >= 7 && inode > 0 && perms[2] == 'x' && path[0] != '\0') {
+            if (strstr(path, ".so") != nullptr) {
+                libraries_discovered++;
+
+                // Skip system runtime libraries to prevent recursion and adhere to hook ownership
+                if (strstr(path, "libc.so") != nullptr ||
+                    strstr(path, "libm.so") != nullptr ||
+                    strstr(path, "libdl.so") != nullptr ||
+                    strstr(path, "liblog.so") != nullptr ||
+                    strstr(path, "libandroid_runtime.so") != nullptr) {
+                    continue;
+                }
+
+                dev_t dev = makedev(dev_major, dev_minor);
+                if (hooked_inodes.count({dev, inode}) == 0) {
+                    hooked_inodes.insert({dev, inode});
+                    hooks_attempted++;
+                    // Register PLT hook for __system_property_get via official Zygisk API v4
+                    api_->pltHookRegister(dev, inode, "__system_property_get",
+                                          reinterpret_cast<void *>(my_copg_system_property_get),
+                                          reinterpret_cast<void **>(&o_copg_system_property_get));
+                    hooks_succeeded++;
+                }
             }
         }
     }
     fclose(maps);
 
-    if (hooked_count > 0) {
-        api_->pltHookCommit();
-        LOGI("COPG: Committed PLT hooks across %zu binary mappings for %s", hooked_count, process_name.c_str());
+    if (hooks_attempted > 0) {
+        commit_succeeded = api_->pltHookCommit();
+        LOGI("COPG PLT Hook Status: discovered=%zu, attempted=%zu, registered=%zu, committed=%d for %s",
+             libraries_discovered, hooks_attempted, hooks_succeeded, commit_succeeded ? 1 : 0, process_name.c_str());
+    } else {
+        LOGI("COPG: Discovered %zu mapped libraries in %s, but no target native libraries eligible for PLT hooking",
+             libraries_discovered, process_name.c_str());
     }
+#else
+    (void)process_name;
+    (void)libraries_discovered;
+    (void)hooks_attempted;
+    (void)hooks_succeeded;
+    (void)commit_succeeded;
+    LOGD("COPG: [Host Mock] PLT hook installation skipped (not Android)");
 #endif
 }
 
@@ -212,19 +416,13 @@ void CopgEngine::preAppSpecialize(zygisk::AppSpecializeArgs *args, const std::st
     }
 
     active_for_current_process_ = true;
+    s_copg_active_instance = this;
     current_device_info_ = it->second.first;
     current_flags_ = it->second.second;
 
     LOGI("COPG preAppSpecialize for target app: %s", process_name.c_str());
 
-    // 1. Root companion mount virtualization for /proc/cpuinfo
-    if (current_flags_.needs_cpu_mount) {
-        executeCompanionCommand("mount_spoof");
-    } else if (current_flags_.needs_cpu_unmount) {
-        executeCompanionCommand("unmount_spoof");
-    }
-
-    // 2. PLT/GOT property hooks
+    // PLT/GOT property hooks are registered in preAppSpecialize before code execution
     if (current_flags_.needs_plt_hook) {
         installPltPropertyHooks(process_name);
     }
@@ -357,6 +555,16 @@ void CopgEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const 
     if (current_flags_.needs_android_id && current_device_info_.should_spoof_android_id) {
         forgeAndroidId(env_, current_device_info_.android_id.c_str());
     }
+
+    // 3. Mount namespace isolation check
+    if (current_flags_.needs_cpu_mount) {
+        LOGW("COPG: CPU mount requested for %s, but target namespace isolation cannot be established. Feature disabled by default to protect shared Zygote namespace.", process_name.c_str());
+    }
+
+    // Write runtime acknowledgement for helperctl
+    std::string ack_path = data_dir_ + "/runtime/copg.ack";
+    int ack_fd = open(ack_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (ack_fd >= 0) close(ack_fd);
 
     // If stealth mode is requested and no persistent native hooks remain, unload
     if (!current_flags_.needs_plt_hook && api_) {

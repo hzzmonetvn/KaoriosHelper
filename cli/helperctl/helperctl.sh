@@ -20,18 +20,72 @@ print_json_status() {
   if [ -f "$DATA_DIR/status.json" ]; then
     cat "$DATA_DIR/status.json"
   else
+    local dex_exists="false"
+    if [ -s "$DATA_DIR/classes.dex" ] || [ -s "$MODDIR/classes.dex" ]; then
+      dex_exists="true"
+    fi
     cat << EOF
 {
+  "schemaVersion": 1,
   "module": {
     "id": "kaorioshelper",
     "version": "$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null || echo 'v1.0.0')",
-    "installed": true
+    "installed": true,
+    "active": $([ -f "$MODDIR/disable" ] && echo "false" || echo "true")
   },
   "engines": {
-    "hma": {"status": "APPLIED", "enabled": true},
-    "pif": {"status": "APPLIED", "enabled": true},
-    "tee": {"status": "NOT_CONFIGURED", "enabled": false},
-    "copg": {"status": "NOT_CONFIGURED", "enabled": false}
+    "hma": {
+      "installed": true,
+      "enabled": $([ ! -f "$DATA_DIR/hma.disabled" ] && echo "true" || echo "false"),
+      "configValid": $([ -s "$DATA_DIR/hma.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": $dex_exists,
+      "hookInitialized": $([ "$dex_exists" = "false" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/hma.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": false,
+      "lastError": $([ "$dex_exists" = "false" ] && echo '"classes.dex missing: upstream HMA DEX payload not bundled"' || echo '""'),
+      "status": $([ "$dex_exists" = "false" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
+      "details": "system_server package protection"
+    },
+    "pif": {
+      "installed": true,
+      "enabled": $([ ! -f "$DATA_DIR/pif.disabled" ] && echo "true" || echo "false"),
+      "configValid": $([ -s "$DATA_DIR/pif.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": true,
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/pif.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target process specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "details": "Play Integrity property interceptor"
+    },
+    "tee": {
+      "installed": true,
+      "enabled": $([ -f "$DATA_DIR/tee.enabled" ] && echo "true" || echo "false"),
+      "configValid": $([ -s "$DATA_DIR/keybox.xml" ] && echo "true" || echo "false"),
+      "runtimeAvailable": false,
+      "hookInitialized": "INCOMPLETE_RUNTIME",
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/tee.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": false,
+      "lastError": "Keystore2 system daemon interception runtime unavailable",
+      "status": "INCOMPLETE_RUNTIME",
+      "details": "Keybox XML validated, Keystore2 daemon ptrace/AIDL is not bundled"
+    },
+    "copg": {
+      "installed": true,
+      "enabled": $([ -f "$DATA_DIR/copg.enabled" ] && echo "true" || echo "false"),
+      "configValid": $([ -s "$DATA_DIR/spoof.json" ] || [ -s "$DATA_DIR/COPG.json" ] && echo "true" || echo "false"),
+      "runtimeAvailable": true,
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
+      "pendingReload": $([ -f "$DATA_DIR/copg.reload_pending" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target app specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "details": "Game profile virtualization"
+    }
   }
 }
 EOF
@@ -56,38 +110,48 @@ cmd_status() {
   fi
 
   echo ""
-  echo "Subsystem Engines:"
+  echo "Subsystem Engines (Verified Runtime Assessment):"
 
   # HMA
   if [ -f "$DATA_DIR/hma.disabled" ]; then
     echo "  • HMA Engine:  DISABLED"
+  elif [ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ]; then
+    echo "  • HMA Engine:  INCOMPLETE_RUNTIME (classes.dex missing)"
+  elif [ -f "$DATA_DIR/runtime/hma.ack" ]; then
+    echo "  • HMA Engine:  ACTIVE (Verified)"
   else
-    echo "  • HMA Engine:  ACTIVE (system_server)"
+    echo "  • HMA Engine:  NOT_VERIFIED (Pending system_server launch)"
   fi
 
   # PIF
   if [ -f "$DATA_DIR/pif.disabled" ]; then
     echo "  • PIF Engine:  DISABLED"
+  elif [ ! -s "$DATA_DIR/pif.json" ]; then
+    echo "  • PIF Engine:  NOT_CONFIGURED (pif.json missing)"
+  elif [ -f "$DATA_DIR/runtime/pif.ack" ]; then
+    echo "  • PIF Engine:  ACTIVE (Verified)"
   else
-    echo "  • PIF Engine:  ACTIVE (GMS/DroidGuard)"
+    echo "  • PIF Engine:  NOT_VERIFIED (Pending GMS specialization)"
   fi
 
   # TEE
-  if [ -f "$DATA_DIR/tee.enabled" ]; then
-    if [ -s "$DATA_DIR/keybox.xml" ]; then
-      echo "  • TEE Engine:  ACTIVE (Keybox Loaded)"
-    else
-      echo "  • TEE Engine:  ENABLED (Keybox Missing: $DATA_DIR/keybox.xml)"
-    fi
-  else
+  if [ ! -f "$DATA_DIR/tee.enabled" ]; then
     echo "  • TEE Engine:  DISABLED (Default)"
+  elif [ ! -s "$DATA_DIR/keybox.xml" ]; then
+    echo "  • TEE Engine:  NOT_CONFIGURED (keybox.xml missing)"
+  else
+    echo "  • TEE Engine:  INCOMPLETE_RUNTIME (Keystore2 daemon interception not bundled)"
   fi
 
   # COPG
-  if [ -f "$DATA_DIR/copg.enabled" ]; then
-    echo "  • COPG Engine: ACTIVE"
-  else
+  if [ ! -f "$DATA_DIR/copg.enabled" ]; then
     echo "  • COPG Engine: DISABLED (Default)"
+  elif [ ! -s "$DATA_DIR/spoof.json" ] && [ ! -s "$DATA_DIR/COPG.json" ]; then
+    echo "  • COPG Engine: NOT_CONFIGURED (spoof.json missing)"
+  elif [ -f "$DATA_DIR/runtime/copg.ack" ]; then
+    echo "  • COPG Engine: ACTIVE (Verified)"
+  else
+    echo "  • COPG Engine: NOT_VERIFIED (Pending target app launch)"
   fi
 
   echo ""

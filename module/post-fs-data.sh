@@ -14,31 +14,9 @@ chmod 0700 "$DATA_DIR/logs" 2>/dev/null
 # Remove stale PID and lock files from prior reboots
 rm -f "$DATA_DIR"/*.pid "$DATA_DIR"/*.lock "$DATA_DIR"/control.sock 2>/dev/null
 
-# ── Bootloader & Verified Boot Properties (Attestation rootOfTrust hardening) ──
-resetprop_if_diff() {
-  local prop="$1"
-  local val="$2"
-  local cur
-  cur=$(getprop "$prop" 2>/dev/null)
-  if [ "$cur" != "$val" ]; then
-    resetprop -n "$prop" "$val" 2>/dev/null || true
-  fi
-}
+# NOTICE: Global device-wide properties (verified boot, flash lock, crypto state)
+# are NOT modified unconditionally during boot.
+# Security property spoofing is scoped strictly to targeted client processes via
+# the Zygisk PIF engine (in-memory Bionic libc interception), preserving the device's
+# genuine security state and encryption for all other processes.
 
-# Android standard verified boot
-resetprop_if_diff ro.boot.verifiedbootstate green
-resetprop_if_diff vendor.boot.verifiedbootstate green
-resetprop_if_diff ro.boot.vbmeta.device_state locked
-resetprop_if_diff vendor.boot.vbmeta.device_state locked
-
-# OEM-specific bootloader flags
-resetprop_if_diff ro.boot.warranty_bit 0
-resetprop_if_diff ro.vendor.boot.warranty_bit 0
-resetprop_if_diff ro.vendor.warranty_bit 0
-resetprop_if_diff ro.warranty_bit 0
-resetprop_if_diff ro.boot.realmebootstate green
-resetprop_if_diff ro.is_ever_orange 0
-
-# Crypto and flash states
-resetprop_if_diff ro.crypto.state encrypted
-resetprop_if_diff ro.boot.flash.locked 1

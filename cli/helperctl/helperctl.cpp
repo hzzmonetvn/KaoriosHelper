@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cerrno>
+#include "../../third_party/json/nlohmann/json.hpp"
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
@@ -70,83 +71,241 @@ public:
 
     struct EngineStatus {
         std::string name;
-        bool enabled;
-        std::string status; // ACTIVE, CONFIGURED, NOT_CONFIGURED, DISABLED, ERROR
-        std::string details;
+        bool installed{true};
+        bool enabled{false};
+        bool configValid{false};
+        bool runtimeAvailable{false};
+        std::string hookInitialized{"NOT_INITIALIZED"};
+        uint64_t appliedGeneration{0};
+        bool pendingReload{false};
+        bool deviceVerified{false};
+        std::string lastError{""};
+        std::string status{"DISABLED"};
+        std::string details{""};
     };
+
+    uint64_t getAppliedGeneration() {
+        std::string gen_file = data_dir_ + "/generation.txt";
+        std::ifstream f(gen_file);
+        if (f.is_open()) {
+            uint64_t gen = 0;
+            if (f >> gen) return gen;
+        }
+        return 0;
+    }
 
     std::map<std::string, EngineStatus> getEngineStatuses() {
         std::map<std::string, EngineStatus> res;
         struct stat st{};
+        uint64_t current_gen = getAppliedGeneration();
 
-        // HMA
-        bool hma_disabled = (stat((data_dir_ + "/hma.disabled").c_str(), &st) == 0);
-        bool hma_cfg_exists = (stat((data_dir_ + "/hma.json").c_str(), &st) == 0 && st.st_size > 0);
+        // ── HMA ─────────────────────────────────────────────────────────────
+        EngineStatus hma;
+        hma.name = "hma";
+        hma.installed = true;
+        hma.enabled = (stat((data_dir_ + "/hma.disabled").c_str(), &st) != 0);
+        hma.pendingReload = (stat((data_dir_ + "/hma.reload_pending").c_str(), &st) == 0);
+        hma.appliedGeneration = current_gen;
+        hma.deviceVerified = false; // Pending physical device testing
+
+        // Check classes.dex
         bool dex_exists = (stat((data_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0) ||
                           (stat((mod_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0);
-        std::string hma_status = "DISABLED";
-        std::string hma_details = "In-process system_server package protection";
-        if (!hma_disabled) {
-            if (hma_cfg_exists) {
-                hma_status = "ACTIVE";
-                hma_details = dex_exists ?
-                    "ZygoteLoader DEX in-memory injection & system_server filtering active" :
-                    "system_server package filtering active (DEX entrypoint optional)";
-            } else {
-                hma_status = "NOT_CONFIGURED";
-                hma_details = "hma.json configuration missing or empty";
-            }
-        }
-        res["hma"] = {"hma", !hma_disabled, hma_status, hma_details};
+        hma.runtimeAvailable = dex_exists;
 
-        // PIF
-        bool pif_disabled = (stat((data_dir_ + "/pif.disabled").c_str(), &st) == 0);
-        bool pif_cfg_exists = (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0);
-        std::string pif_status = "DISABLED";
-        std::string pif_details = "Play Integrity Fix property spoofing";
-        if (!pif_disabled) {
-            if (pif_cfg_exists) {
-                pif_status = "ACTIVE";
-                pif_details = "ByteDance ShadowHook native libc __system_property_read_callback & Build spoofing active";
-            } else {
-                pif_status = "NOT_CONFIGURED";
-                pif_details = "pif.json configuration missing or empty";
-            }
+        // Check hma.json
+        if (stat((data_dir_ + "/hma.json").c_str(), &st) == 0 && st.st_size > 0) {
+            std::ifstream f(data_dir_ + "/hma.json");
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            auto j = nlohmann::json::parse(content, nullptr, false);
+            hma.configValid = (!j.is_discarded() && j.is_object());
+            if (!hma.configValid) hma.lastError = "hma.json malformed JSON syntax";
+        } else {
+            hma.configValid = false;
+            hma.lastError = "hma.json configuration missing or empty";
         }
-        res["pif"] = {"pif", !pif_disabled, pif_status, pif_details};
 
-        // TEE
-        bool tee_enabled = (stat((data_dir_ + "/tee.enabled").c_str(), &st) == 0);
-        bool keybox_exists = (stat((data_dir_ + "/keybox.xml").c_str(), &st) == 0 && st.st_size > 0);
-        std::string tee_status = "DISABLED";
-        std::string tee_details = "Hardware Keystore2 / KeyMint attestation simulation";
-        if (tee_enabled) {
-            if (keybox_exists) {
-                tee_status = "ACTIVE";
-                tee_details = "Keybox XML certificate chain validated; Keystore2 daemon isolation verified";
+        if (!hma.enabled) {
+            hma.status = "DISABLED";
+            hma.hookInitialized = "DISABLED";
+            hma.lastError = "Engine explicitly disabled via hma.disabled marker";
+            hma.details = "In-process system_server package protection (disabled)";
+        } else if (!hma.configValid) {
+            hma.status = "NOT_CONFIGURED";
+            hma.hookInitialized = "NOT_INITIALIZED";
+            hma.details = "hma.json configuration missing or malformed";
+        } else if (!hma.runtimeAvailable) {
+            // HMA without DEX must report INCOMPLETE_RUNTIME
+            hma.status = "INCOMPLETE_RUNTIME";
+            hma.hookInitialized = "INCOMPLETE_RUNTIME";
+            hma.lastError = "classes.dex missing: upstream HMA DEX payload not bundled";
+            hma.details = "system_server in-memory DEX loader waiting for classes.dex";
+        } else if (hma.pendingReload) {
+            hma.status = "PENDING_RELOAD";
+            hma.hookInitialized = "INITIALIZED";
+            hma.details = "HMA DEX present; pending system_server restart";
+        } else {
+            bool ack = (stat((data_dir_ + "/runtime/hma.ack").c_str(), &st) == 0);
+            if (ack) {
+                hma.status = "ACTIVE";
+                hma.hookInitialized = "INITIALIZED";
+                hma.deviceVerified = true;
+                hma.lastError = "";
+                hma.details = "system_server in-memory DEX injection & package filtering verified";
             } else {
-                tee_status = "KEYBOX_MISSING";
-                tee_details = "tee.enabled active but keybox.xml missing in data directory";
+                hma.status = "NOT_VERIFIED";
+                hma.hookInitialized = "NOT_VERIFIED";
+                hma.lastError = "Runtime hook acknowledgement pending system_server specialization";
+                hma.details = "HMA configured with DEX; awaiting system_server execution";
             }
         }
-        res["tee"] = {"tee", tee_enabled, tee_status, tee_details};
+        res["hma"] = hma;
 
-        // COPG
-        bool copg_enabled = (stat((data_dir_ + "/copg.enabled").c_str(), &st) == 0);
-        bool spoof_exists = (stat((data_dir_ + "/spoof.json").c_str(), &st) == 0 && st.st_size > 0) ||
-                            (stat((data_dir_ + "/COPG.json").c_str(), &st) == 0 && st.st_size > 0);
-        std::string copg_status = "DISABLED";
-        std::string copg_details = "Game profile and device identity virtualization";
-        if (copg_enabled) {
-            if (spoof_exists) {
-                copg_status = "ACTIVE";
-                copg_details = "Per-app Build spoofing, root companion /proc/cpuinfo mount virtualization & MemoryIntArray ANDROID_ID active";
+        // ── PIF ─────────────────────────────────────────────────────────────
+        EngineStatus pif;
+        pif.name = "pif";
+        pif.installed = true;
+        pif.enabled = (stat((data_dir_ + "/pif.disabled").c_str(), &st) != 0);
+        pif.pendingReload = (stat((data_dir_ + "/pif.reload_pending").c_str(), &st) == 0);
+        pif.appliedGeneration = current_gen;
+        pif.deviceVerified = false; // Pending physical device testing
+        pif.runtimeAvailable = true; // ByteDance ShadowHook property interceptor available
+
+        if (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0) {
+            std::ifstream f(data_dir_ + "/pif.json");
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            auto j = nlohmann::json::parse(content, nullptr, false);
+            pif.configValid = (!j.is_discarded() && j.is_object());
+            if (!pif.configValid) pif.lastError = "pif.json malformed JSON syntax";
+        } else {
+            pif.configValid = false;
+            pif.lastError = "pif.json configuration missing or empty";
+        }
+
+        if (!pif.enabled) {
+            pif.status = "DISABLED";
+            pif.hookInitialized = "DISABLED";
+            pif.lastError = "Engine explicitly disabled via pif.disabled marker";
+            pif.details = "Play Integrity Fix property spoofing (disabled)";
+        } else if (!pif.configValid) {
+            pif.status = "NOT_CONFIGURED";
+            pif.hookInitialized = "NOT_INITIALIZED";
+            pif.details = "pif.json configuration missing or malformed";
+        } else if (pif.pendingReload) {
+            pif.status = "PENDING_RELOAD";
+            pif.hookInitialized = "NOT_VERIFIED";
+            pif.details = "PIF configuration updated; pending target reload";
+        } else {
+            bool ack = (stat((data_dir_ + "/runtime/pif.ack").c_str(), &st) == 0);
+            if (ack) {
+                pif.status = "ACTIVE";
+                pif.hookInitialized = "INITIALIZED";
+                pif.deviceVerified = true;
+                pif.lastError = "";
+                pif.details = "ByteDance ShadowHook native libc property hook active and verified";
             } else {
-                copg_status = "NOT_CONFIGURED";
-                copg_details = "copg.enabled active but spoof.json missing in data directory";
+                // PIF must report NOT_VERIFIED until runtime acknowledgements exist
+                pif.status = "NOT_VERIFIED";
+                pif.hookInitialized = "NOT_VERIFIED";
+                pif.lastError = "Runtime hook acknowledgement pending target process specialization";
+                pif.details = "ByteDance ShadowHook property interceptor configured";
             }
         }
-        res["copg"] = {"copg", copg_enabled, copg_status, copg_details};
+        res["pif"] = pif;
+
+        // ── TEE ─────────────────────────────────────────────────────────────
+        EngineStatus tee;
+        tee.name = "tee";
+        tee.installed = true;
+        tee.enabled = (stat((data_dir_ + "/tee.enabled").c_str(), &st) == 0);
+        tee.pendingReload = (stat((data_dir_ + "/tee.reload_pending").c_str(), &st) == 0);
+        tee.appliedGeneration = current_gen;
+        tee.deviceVerified = false;
+        tee.runtimeAvailable = false; // Keystore2 ptrace/AIDL integration is not bundled
+
+        if (stat((data_dir_ + "/keybox.xml").c_str(), &st) == 0 && st.st_size > 0) {
+            std::ifstream f(data_dir_ + "/keybox.xml");
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            tee.configValid = validateXmlSyntax(content);
+            if (!tee.configValid) tee.lastError = "keybox.xml invalid XML structure";
+        } else {
+            tee.configValid = false;
+            tee.lastError = "keybox.xml missing or empty";
+        }
+
+        // TEE without Keystore2 ptrace/AIDL must report INCOMPLETE_RUNTIME
+        if (!tee.enabled) {
+            tee.status = "DISABLED";
+            tee.hookInitialized = "INCOMPLETE_RUNTIME";
+            tee.lastError = "Keystore2 system daemon interception runtime unavailable; engine disabled";
+            tee.details = "Hardware Keystore2 / KeyMint attestation simulation (disabled)";
+        } else if (!tee.configValid) {
+            tee.status = "NOT_CONFIGURED";
+            tee.hookInitialized = "INCOMPLETE_RUNTIME";
+            tee.details = "tee.enabled active but keybox.xml missing or invalid";
+        } else {
+            tee.status = "INCOMPLETE_RUNTIME";
+            tee.hookInitialized = "INCOMPLETE_RUNTIME";
+            tee.lastError = "Keystore2 system daemon interception runtime unavailable";
+            tee.details = "Keybox XML structure validated, but Keystore2 daemon ptrace/AIDL is not bundled";
+        }
+        res["tee"] = tee;
+
+        // ── COPG ────────────────────────────────────────────────────────────
+        EngineStatus copg;
+        copg.name = "copg";
+        copg.installed = true;
+        copg.enabled = (stat((data_dir_ + "/copg.enabled").c_str(), &st) == 0);
+        copg.pendingReload = (stat((data_dir_ + "/copg.reload_pending").c_str(), &st) == 0);
+        copg.appliedGeneration = current_gen;
+        copg.deviceVerified = false;
+        copg.runtimeAvailable = true;
+
+        std::string copg_file = data_dir_ + "/spoof.json";
+        if (stat(copg_file.c_str(), &st) != 0 || st.st_size == 0) {
+            copg_file = data_dir_ + "/COPG.json";
+        }
+        if (stat(copg_file.c_str(), &st) == 0 && st.st_size > 0) {
+            std::ifstream f(copg_file);
+            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            auto j = nlohmann::json::parse(content, nullptr, false);
+            copg.configValid = (!j.is_discarded() && j.is_object());
+            if (!copg.configValid) copg.lastError = "spoof.json malformed JSON syntax";
+        } else {
+            copg.configValid = false;
+            copg.lastError = "spoof.json missing or empty";
+        }
+
+        if (!copg.enabled) {
+            copg.status = "DISABLED";
+            copg.hookInitialized = "DISABLED";
+            copg.lastError = "Engine disabled (copg.enabled marker absent)";
+            copg.details = "Game profile and device identity virtualization (disabled)";
+        } else if (!copg.configValid) {
+            copg.status = "NOT_CONFIGURED";
+            copg.hookInitialized = "NOT_INITIALIZED";
+            copg.details = "copg.enabled active but spoof.json missing or empty";
+        } else if (copg.pendingReload) {
+            copg.status = "PENDING_RELOAD";
+            copg.hookInitialized = "NOT_VERIFIED";
+            copg.details = "COPG configuration updated; pending game reload";
+        } else {
+            bool ack = (stat((data_dir_ + "/runtime/copg.ack").c_str(), &st) == 0);
+            if (ack) {
+                copg.status = "ACTIVE";
+                copg.hookInitialized = "INITIALIZED";
+                copg.deviceVerified = true;
+                copg.lastError = "";
+                copg.details = "Per-app Build spoofing active and verified";
+            } else {
+                // COPG must report NOT_VERIFIED until runtime acknowledgements exist
+                copg.status = "NOT_VERIFIED";
+                copg.hookInitialized = "NOT_VERIFIED";
+                copg.lastError = "Runtime hook acknowledgement pending target app specialization";
+                copg.details = "Game profile and device identity virtualization configured";
+            }
+        }
+        res["copg"] = copg;
 
         return res;
     }
@@ -163,21 +322,29 @@ public:
         std::string ver = getVersion();
         bool mod_dis = isModuleDisabled();
 
-        f << "{\n";
-        f << "  \"moduleVersion\": \"" << ver << "\",\n";
-        f << "  \"moduleState\": \"" << (mod_dis ? "DISABLED" : "ACTIVE") << "\",\n";
-        f << "  \"engines\": {\n";
+        nlohmann::json j;
+        j["schemaVersion"] = 1;
+        j["moduleVersion"] = ver;
+        j["moduleState"] = mod_dis ? "DISABLED" : "ACTIVE";
+        j["engines"] = nlohmann::json::object();
 
-        size_t count = 0;
         for (const auto &[name, eng] : engines) {
-            f << "    \"" << name << "\": {\n";
-            f << "      \"enabled\": " << (eng.enabled ? "true" : "false") << ",\n";
-            f << "      \"status\": \"" << eng.status << "\",\n";
-            f << "      \"details\": \"" << eng.details << "\"\n";
-            f << "    }" << (++count < engines.size() ? "," : "") << "\n";
+            nlohmann::json ej;
+            ej["installed"] = eng.installed;
+            ej["enabled"] = eng.enabled;
+            ej["configValid"] = eng.configValid;
+            ej["runtimeAvailable"] = eng.runtimeAvailable;
+            ej["hookInitialized"] = eng.hookInitialized;
+            ej["appliedGeneration"] = eng.appliedGeneration;
+            ej["pendingReload"] = eng.pendingReload;
+            ej["deviceVerified"] = eng.deviceVerified;
+            ej["lastError"] = eng.lastError;
+            ej["status"] = eng.status;
+            ej["details"] = eng.details;
+            j["engines"][name] = ej;
         }
-        f << "  }\n";
-        f << "}\n";
+
+        f << j.dump(2) << "\n";
         f.flush();
         f.close();
 
@@ -191,23 +358,30 @@ public:
         bool mod_dis = isModuleDisabled();
 
         if (json_mode) {
-            std::cout << "{\n";
-            std::cout << "  \"module\": {\n";
-            std::cout << "    \"id\": \"kaorioshelper\",\n";
-            std::cout << "    \"version\": \"" << ver << "\",\n";
-            std::cout << "    \"active\": " << (mod_dis ? "false" : "true") << "\n";
-            std::cout << "  },\n";
-            std::cout << "  \"engines\": {\n";
-            size_t c = 0;
+            nlohmann::json j;
+            j["schemaVersion"] = 1;
+            j["module"] = {
+                {"id", "kaorioshelper"},
+                {"version", ver},
+                {"active", !mod_dis}
+            };
+            j["engines"] = nlohmann::json::object();
             for (const auto &[name, eng] : engines) {
-                std::cout << "    \"" << name << "\": {\n";
-                std::cout << "      \"enabled\": " << (eng.enabled ? "true" : "false") << ",\n";
-                std::cout << "      \"status\": \"" << eng.status << "\",\n";
-                std::cout << "      \"details\": \"" << eng.details << "\"\n";
-                std::cout << "    }" << (++c < engines.size() ? "," : "") << "\n";
+                nlohmann::json ej;
+                ej["installed"] = eng.installed;
+                ej["enabled"] = eng.enabled;
+                ej["configValid"] = eng.configValid;
+                ej["runtimeAvailable"] = eng.runtimeAvailable;
+                ej["hookInitialized"] = eng.hookInitialized;
+                ej["appliedGeneration"] = eng.appliedGeneration;
+                ej["pendingReload"] = eng.pendingReload;
+                ej["deviceVerified"] = eng.deviceVerified;
+                ej["lastError"] = eng.lastError;
+                ej["status"] = eng.status;
+                ej["details"] = eng.details;
+                j["engines"][name] = ej;
             }
-            std::cout << "  }\n";
-            std::cout << "}\n";
+            std::cout << j.dump(2) << "\n";
             return 0;
         }
 
@@ -220,9 +394,19 @@ public:
 
         for (const auto &[name, eng] : engines) {
             std::cout << "  • " << name << " Engine:\n";
-            std::cout << "      Enabled: " << (eng.enabled ? "YES" : "NO") << "\n";
-            std::cout << "      Status:  " << eng.status << "\n";
-            std::cout << "      Details: " << eng.details << "\n";
+            std::cout << "      Installed:        " << (eng.installed ? "YES" : "NO") << "\n";
+            std::cout << "      Enabled:          " << (eng.enabled ? "YES" : "NO") << "\n";
+            std::cout << "      Config Valid:     " << (eng.configValid ? "YES" : "NO") << "\n";
+            std::cout << "      Runtime Avail:    " << (eng.runtimeAvailable ? "YES" : "NO") << "\n";
+            std::cout << "      Hook Status:      " << eng.hookInitialized << "\n";
+            std::cout << "      Applied Gen:      " << eng.appliedGeneration << "\n";
+            std::cout << "      Pending Reload:   " << (eng.pendingReload ? "YES" : "NO") << "\n";
+            std::cout << "      Device Verified:  " << (eng.deviceVerified ? "YES" : "NO") << "\n";
+            std::cout << "      Status:           " << eng.status << "\n";
+            if (!eng.lastError.empty()) {
+                std::cout << "      Last Error:       " << eng.lastError << "\n";
+            }
+            std::cout << "      Details:          " << eng.details << "\n";
         }
 
         std::cout << "\nStorage Directory: " << data_dir_ << "\n";
@@ -320,12 +504,34 @@ public:
     }
 
     static bool validateXmlSyntax(const std::string &content) {
-        if (content.find("<Keybox") == std::string::npos && content.find("<keybox") == std::string::npos) {
+        if (content.empty()) return false;
+
+        // Structural check: Root tag
+        bool has_root = (content.find("<KeyboxContent") != std::string::npos && content.find("</KeyboxContent>") != std::string::npos) ||
+                         (content.find("<Keybox") != std::string::npos && content.find("</Keybox>") != std::string::npos);
+        if (!has_root) return false;
+
+        // Structural check: Key element with algorithm
+        size_t key_open = content.find("<Key");
+        size_t key_close = content.find("</Key>");
+        if (key_open == std::string::npos || key_close == std::string::npos || key_close <= key_open) {
             return false;
         }
-        if (content.find("</Keybox>") == std::string::npos && content.find("</keybox>") == std::string::npos) {
+
+        // Structural check: PrivateKey element
+        size_t priv_open = content.find("<PrivateKey", key_open);
+        size_t priv_close = content.find("</PrivateKey>", key_open);
+        if (priv_open == std::string::npos || priv_close == std::string::npos || priv_close <= priv_open || priv_close > key_close) {
             return false;
         }
+
+        // Structural check: Certificate element
+        size_t cert_open = content.find("<Certificate", key_open);
+        size_t cert_close = content.find("</Certificate>", key_open);
+        if (cert_open == std::string::npos || cert_close == std::string::npos || cert_close <= cert_open || cert_close > key_close) {
+            return false;
+        }
+
         return true;
     }
 

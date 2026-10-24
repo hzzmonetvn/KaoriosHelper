@@ -6,6 +6,8 @@ out/
 *.o
 *.a
 *.so
+*.dex
+module/classes.dex
 module/helperctl
 module/bin/
 module/zygisk/*.so

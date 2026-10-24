@@ -6,9 +6,17 @@
 #include "pif_engine.hpp"
 #include "logging.hpp"
 #include <fstream>
+#include <cstdio>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <cstring>
 #include <algorithm>
+
+#if __has_include(<nlohmann/json.hpp>)
+#include <nlohmann/json.hpp>
+#elif __has_include("../../third_party/json/nlohmann/json.hpp")
+#include "../../third_party/json/nlohmann/json.hpp"
+#endif
 
 #if defined(__ANDROID__)
 #include <android/log.h>
@@ -18,8 +26,11 @@
 
 typedef void (*T_Callback)(void *cookie, const char *name, const char *value, uint32_t serial);
 
-static std::map<void *, T_Callback> g_callbacks;
-static std::mutex g_callbacks_mutex;
+struct PropertyCallbackContext {
+    T_Callback original_callback = nullptr;
+    void *original_cookie = nullptr;
+};
+
 static void (*o_system_property_read_callback)(const prop_info *, T_Callback, void *) = nullptr;
 
 #endif
@@ -100,15 +111,8 @@ bool PifEngine::resolveSpoofedProperty(const std::string &name, const char *orig
 
 #if defined(__ANDROID__)
 static void pif_modify_callback(void *cookie, const char *name, const char *value, uint32_t serial) {
-    if (!cookie || !name || !value) return;
-
-    T_Callback orig_cb = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_callbacks_mutex);
-        auto it = g_callbacks.find(cookie);
-        if (it == g_callbacks.end()) return;
-        orig_cb = it->second;
-    }
+    auto *ctx = static_cast<PropertyCallbackContext *>(cookie);
+    if (!ctx || !ctx->original_callback || !name || !value) return;
 
     std::string spoofed_val;
     const char *final_val = value;
@@ -117,23 +121,17 @@ static void pif_modify_callback(void *cookie, const char *name, const char *valu
         LOGD("PIF [ShadowHook libc] [%s]: %s -> %s", name, value, final_val);
     }
 
-    orig_cb(cookie, name, final_val, serial);
+    ctx->original_callback(ctx->original_cookie, name, final_val, serial);
 }
 
 static void my_system_property_read_callback(const prop_info *pi, T_Callback callback, void *cookie) {
-    if (!pi || !callback || !cookie) {
-        if (o_system_property_read_callback && pi && callback) {
-            o_system_property_read_callback(pi, callback, cookie);
-        }
-        return;
-    }
+    if (!o_system_property_read_callback || !pi || !callback) return;
 
-    {
-        std::lock_guard<std::mutex> lock(g_callbacks_mutex);
-        g_callbacks[cookie] = callback;
-    }
-
-    o_system_property_read_callback(pi, pif_modify_callback, cookie);
+    // Bionic libc's __system_property_read_callback executes callback synchronously
+    // within the caller's stack frame. Allocating PropertyCallbackContext on the stack
+    // frame completely eliminates unbounded heap growth, mutex contention, and leaks.
+    PropertyCallbackContext ctx{callback, cookie};
+    o_system_property_read_callback(pi, pif_modify_callback, &ctx);
 }
 #endif
 
@@ -174,53 +172,84 @@ void PifEngine::installPropertyHook() {
 bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof_provider) {
     std::string config_path = data_dir_ + "/pif.json";
     struct stat st{};
-    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
-        LOGW("PIF config missing or empty: %s", config_path.c_str());
-        return false;
-    }
+    bool use_fallback = false;
 
     spoof_provider = 0;
     spoof_props_ = 1;
     spoof_build_ = 1;
 
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        return false;
+    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
+        LOGW("PIF config missing or empty: %s, engaging known-good fallback profile", config_path.c_str());
+        use_fallback = true;
     }
 
-    std::string line;
-    while (std::getline(file, line)) {
-        size_t colon = line.find(':');
-        if (colon == std::string::npos) continue;
-
-        size_t k_start = line.find('"');
-        if (k_start == std::string::npos || k_start >= colon) continue;
-        size_t k_end = line.find('"', k_start + 1);
-        if (k_end == std::string::npos || k_end >= colon) continue;
-        std::string key = line.substr(k_start + 1, k_end - k_start - 1);
-
-        size_t v_start = line.find('"', colon + 1);
-        if (v_start != std::string::npos) {
-            size_t v_end = line.find('"', v_start + 1);
-            if (v_end != std::string::npos) {
-                props[key] = line.substr(v_start + 1, v_end - v_start - 1);
-                continue;
+    nlohmann::json j;
+    if (!use_fallback) {
+        std::ifstream file(config_path);
+        if (!file.is_open()) {
+            LOGW("PIF: Failed to open %s, using known-good fallback", config_path.c_str());
+            use_fallback = true;
+        } else {
+            try {
+                file >> j;
+                if (!j.is_object()) {
+                    LOGW("PIF: JSON root is not an object in %s, using known-good fallback", config_path.c_str());
+                    use_fallback = true;
+                }
+            } catch (const std::exception &e) {
+                LOGW("PIF: Failed to parse %s as JSON (%s), using known-good fallback", config_path.c_str(), e.what());
+                use_fallback = true;
             }
         }
+    }
 
-        // Check for numeric flags
-        if (key == "spoofProvider") {
-            size_t num_pos = line.find_first_of("0123456789", colon + 1);
-            if (num_pos != std::string::npos) spoof_provider = line[num_pos] - '0';
-        } else if (key == "spoofProps") {
-            size_t num_pos = line.find_first_of("0123456789", colon + 1);
-            if (num_pos != std::string::npos) spoof_props_ = line[num_pos] - '0';
-        } else if (key == "spoofBuild") {
-            size_t num_pos = line.find_first_of("0123456789", colon + 1);
-            if (num_pos != std::string::npos) spoof_build_ = line[num_pos] - '0';
-        } else if (key == "DEVICE_INITIAL_SDK_INT") {
-            size_t num_pos = line.find_first_of("0123456789", colon + 1);
-            if (num_pos != std::string::npos) device_initial_sdk_int_ = std::atoi(line.c_str() + num_pos);
+    if (use_fallback) {
+        props = {
+            {"MANUFACTURER", "Google"},
+            {"BRAND", "google"},
+            {"PRODUCT", "husky"},
+            {"DEVICE", "husky"},
+            {"MODEL", "Pixel 8 Pro"},
+            {"FINGERPRINT", "google/husky/husky:14/UD1A.230803.041/10808477:user/release-keys"},
+            {"SECURITY_PATCH", "2024-05-05"},
+            {"ID", "UD1A.230803.041"},
+            {"TYPE", "user"},
+            {"TAGS", "release-keys"},
+            {"INCREMENTAL", "10808477"},
+            {"RELEASE", "14"}
+        };
+        device_initial_sdk_int_ = 34;
+        spoof_provider = 0;
+        spoof_props_ = 1;
+        spoof_build_ = 1;
+    } else {
+        props.clear();
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            const std::string &key = it.key();
+            const auto &val = it.value();
+
+            if (key == "spoofProvider") {
+                if (val.is_number()) spoof_provider = val.get<int>();
+                else if (val.is_string()) spoof_provider = std::atoi(val.get<std::string>().c_str());
+                else if (val.is_boolean()) spoof_provider = val.get<bool>() ? 1 : 0;
+            } else if (key == "spoofProps") {
+                if (val.is_number()) spoof_props_ = val.get<int>();
+                else if (val.is_string()) spoof_props_ = std::atoi(val.get<std::string>().c_str());
+                else if (val.is_boolean()) spoof_props_ = val.get<bool>() ? 1 : 0;
+            } else if (key == "spoofBuild") {
+                if (val.is_number()) spoof_build_ = val.get<int>();
+                else if (val.is_string()) spoof_build_ = std::atoi(val.get<std::string>().c_str());
+                else if (val.is_boolean()) spoof_build_ = val.get<bool>() ? 1 : 0;
+            } else if (key == "DEVICE_INITIAL_SDK_INT" || key == "FIRST_API_LEVEL") {
+                if (val.is_number()) device_initial_sdk_int_ = val.get<int>();
+                else if (val.is_string()) device_initial_sdk_int_ = std::atoi(val.get<std::string>().c_str());
+            } else if (val.is_string()) {
+                props[key] = val.get<std::string>();
+            } else if (val.is_number_integer()) {
+                props[key] = std::to_string(val.get<int64_t>());
+            } else if (val.is_boolean()) {
+                props[key] = val.get<bool>() ? "1" : "0";
+            }
         }
     }
 
@@ -362,6 +391,15 @@ void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
     }
 
     LOGI("PIF properties and native hooks applied successfully in %s", process_name.c_str());
+
+    std::string ack_dir = data_dir_ + "/runtime";
+    mkdir(ack_dir.c_str(), 0755);
+    std::string ack_path = ack_dir + "/pif.ack";
+    FILE *ack_f = fopen(ack_path.c_str(), "w");
+    if (ack_f) {
+        fprintf(ack_f, "%s\n", process_name.c_str());
+        fclose(ack_f);
+    }
 }
 
 } // namespace kaorios

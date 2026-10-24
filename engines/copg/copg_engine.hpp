@@ -71,6 +71,10 @@ public:
     // PLT / GOT property hook registration
     void installPltPropertyHooks(const std::string &process_name);
 
+    // Dynamic property override lookup for native PLT hooks
+    bool resolvePropertyOverride(const std::string &name, std::string &out_value) const;
+    static CopgEngine* getActiveInstance();
+
 private:
     std::string data_dir_;
     zygisk::Api *api_ = nullptr;

@@ -26,6 +26,11 @@ void HmaEngine::cleanupDex() {
         env_->DeleteGlobalRef(dex_entrypoint_);
         dex_entrypoint_ = nullptr;
     }
+    if (dex_mmap_addr_ && dex_mmap_size_ > 0) {
+        munmap(dex_mmap_addr_, dex_mmap_size_);
+        dex_mmap_addr_ = nullptr;
+        dex_mmap_size_ = 0;
+    }
 }
 
 bool HmaEngine::isEnabled() const {
@@ -199,38 +204,111 @@ bool HmaEngine::tryLoadDex(int module_dir, const char *package_name, const char 
     }
 
     jclass clClass = env_->FindClass("java/lang/ClassLoader");
-    if (!clClass) {
-        munmap(data, st.st_size);
+    if (env_->ExceptionCheck() || !clClass) {
         env_->ExceptionClear();
+        munmap(data, st.st_size);
         return false;
     }
 
     jmethodID getSysLoader = env_->GetStaticMethodID(clClass, "getSystemClassLoader", "()Ljava/lang/ClassLoader;");
+    if (env_->ExceptionCheck() || !getSysLoader) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
+
     jobject sysLoader = env_->CallStaticObjectMethod(clClass, getSysLoader);
+    if (env_->ExceptionCheck() || !sysLoader) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
 
     jclass byteBufClass = env_->FindClass("java/nio/ByteBuffer");
-    jclass inMemClClass = env_->FindClass("dalvik/system/InMemoryDexClassLoader");
-
-    if (!byteBufClass || !inMemClClass || !sysLoader) {
-        munmap(data, st.st_size);
+    if (env_->ExceptionCheck() || !byteBufClass) {
         env_->ExceptionClear();
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
+
+    jclass inMemClClass = env_->FindClass("dalvik/system/InMemoryDexClassLoader");
+    if (env_->ExceptionCheck() || !inMemClClass) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
         return false;
     }
 
     jobject directBuf = env_->NewDirectByteBuffer(data, st.st_size);
+    if (env_->ExceptionCheck() || !directBuf) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(inMemClClass);
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
+
     jobjectArray bufArray = env_->NewObjectArray(1, byteBufClass, directBuf);
+    if (env_->ExceptionCheck() || !bufArray) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(directBuf);
+        env_->DeleteLocalRef(inMemClClass);
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
 
     jmethodID inMemInit = env_->GetMethodID(inMemClClass, "<init>", "([Ljava/nio/ByteBuffer;Ljava/lang/ClassLoader;)V");
-    jobject inMemLoader = env_->NewObject(inMemClClass, inMemInit, bufArray, sysLoader);
-
-    if (!inMemLoader) {
+    if (env_->ExceptionCheck() || !inMemInit) {
         env_->ExceptionClear();
+        env_->DeleteLocalRef(bufArray);
+        env_->DeleteLocalRef(directBuf);
+        env_->DeleteLocalRef(inMemClClass);
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
+
+    jobject inMemLoader = env_->NewObject(inMemClClass, inMemInit, bufArray, sysLoader);
+    if (env_->ExceptionCheck() || !inMemLoader) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(bufArray);
+        env_->DeleteLocalRef(directBuf);
+        env_->DeleteLocalRef(inMemClClass);
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
         munmap(data, st.st_size);
         return false;
     }
 
     // Try loading entrypoints
     jmethodID loadClassMid = env_->GetMethodID(clClass, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+    if (env_->ExceptionCheck() || !loadClassMid) {
+        env_->ExceptionClear();
+        env_->DeleteLocalRef(inMemLoader);
+        env_->DeleteLocalRef(bufArray);
+        env_->DeleteLocalRef(directBuf);
+        env_->DeleteLocalRef(inMemClClass);
+        env_->DeleteLocalRef(byteBufClass);
+        env_->DeleteLocalRef(sysLoader);
+        env_->DeleteLocalRef(clClass);
+        munmap(data, st.st_size);
+        return false;
+    }
+
     const char *entry_names[] = {
         "com.v7878.zygisk.EntryPoint",
         "org.frknkrc44.hma_oss.zygote.ZygoteEntry"
@@ -239,21 +317,38 @@ bool HmaEngine::tryLoadDex(int module_dir, const char *package_name, const char 
     jclass entryClass = nullptr;
     for (const char *name : entry_names) {
         jstring jname = env_->NewStringUTF(name);
+        if (!jname) {
+            if (env_->ExceptionCheck()) env_->ExceptionClear();
+            continue;
+        }
         entryClass = (jclass) env_->CallObjectMethod(inMemLoader, loadClassMid, jname);
         env_->DeleteLocalRef(jname);
+        if (env_->ExceptionCheck()) {
+            env_->ExceptionClear();
+            entryClass = nullptr;
+        }
         if (entryClass) break;
-        env_->ExceptionClear();
     }
 
     if (entryClass) {
         dex_entrypoint_ = (jclass) env_->NewGlobalRef(entryClass);
+        env_->DeleteLocalRef(entryClass);
+        // Retain mmapped buffer memory ownership while dex_entrypoint_ is alive
+        dex_mmap_addr_ = data;
+        dex_mmap_size_ = st.st_size;
         LOGI("HMA: Injected DEX loaded successfully into system_server");
+    } else {
+        LOGW("HMA: None of the candidate entrypoints found in classes.dex");
+        munmap(data, st.st_size);
     }
 
+    env_->DeleteLocalRef(loadClassMid ? inMemLoader : nullptr);
     env_->DeleteLocalRef(directBuf);
     env_->DeleteLocalRef(bufArray);
-    env_->DeleteLocalRef(inMemLoader);
+    env_->DeleteLocalRef(inMemClClass);
+    env_->DeleteLocalRef(byteBufClass);
     env_->DeleteLocalRef(sysLoader);
+    env_->DeleteLocalRef(clClass);
     return (dex_entrypoint_ != nullptr);
 }
 
@@ -281,11 +376,24 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
         // If DEX was injected, call its initialization hook
         if (dex_entrypoint_ && env_) {
             jmethodID mainMid = env_->GetStaticMethodID(dex_entrypoint_, "main", "()V");
-            if (mainMid) {
-                env_->CallStaticVoidMethod(dex_entrypoint_, mainMid);
-                LOGI("HMA: ZygoteEntry.main() executed inside system_server");
-            } else {
+            if (env_->ExceptionCheck() || !mainMid) {
                 env_->ExceptionClear();
+            } else {
+                env_->CallStaticVoidMethod(dex_entrypoint_, mainMid);
+                if (env_->ExceptionCheck()) {
+                    LOGE("HMA: Exception occurred during ZygoteEntry.main()");
+                    env_->ExceptionClear();
+                } else {
+                    LOGI("HMA: ZygoteEntry.main() executed inside system_server");
+                    std::string ack_dir = data_dir_ + "/runtime";
+                    mkdir(ack_dir.c_str(), 0755);
+                    std::string ack_path = ack_dir + "/hma.ack";
+                    FILE *ack_f = fopen(ack_path.c_str(), "w");
+                    if (ack_f) {
+                        fprintf(ack_f, "system_server\n");
+                        fclose(ack_f);
+                    }
+                }
             }
         }
 

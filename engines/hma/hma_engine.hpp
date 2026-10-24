@@ -53,6 +53,8 @@ private:
     zygisk::Api *api_ = nullptr;
     JNIEnv *env_ = nullptr;
     jclass dex_entrypoint_ = nullptr;
+    void *dex_mmap_addr_ = nullptr;
+    size_t dex_mmap_size_ = 0;
 
     bool loadConfig();
     bool config_loaded_ = false;

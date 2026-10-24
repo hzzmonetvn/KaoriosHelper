@@ -20,6 +20,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/engines/pif
     ${CMAKE_CURRENT_SOURCE_DIR}/engines/tee
     ${CMAKE_CURRENT_SOURCE_DIR}/engines/copg
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/json
 )
 
 # Core sources for dispatcher and engines

@@ -28,4 +28,52 @@ jobs:
 
       - name: Run Python Management Test Suite
         run: |
-          python3 -m unittest discover -s tests -p "test_*.py"
+          PYTHONPATH=. python3 -m unittest discover -s tests -p "test_*.py"
+
+  build-android:
+    name: Android Multi-ABI Cross-Compilation & Packaging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'build-tools;34.0.0 platforms;android-34'
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      - name: Build HMA DEX Payload
+        run: |
+          chmod +x dex/build_dex.sh
+          bash dex/build_dex.sh
+
+      - name: Cross-Compile Native Multi-ABI Libraries & CLI
+        run: |
+          chmod +x scripts/build_android.sh
+          bash scripts/build_android.sh all
+
+      - name: Package Module ZIP
+        run: |
+          python3 scripts/package_module.py
+
+      - name: Verify ELFs, Packaging & Generate Status Report
+        run: |
+          python3 scripts/verify_artifacts.py
+
+      - name: Upload Module Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kaorioshelper-flashable-module
+          path: out/*.zip
+          if-no-files-found: error
