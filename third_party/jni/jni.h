@@ -133,6 +133,12 @@ struct JNIEnv_ {
         return nullptr;
     }
     void CallStaticVoidMethod(jclass clazz, jmethodID methodID, ...) {}
+    jint CallStaticIntMethod(jclass clazz, jmethodID methodID, ...) {
+        return 0;
+    }
+    jint CallIntMethod(jobject obj, jmethodID methodID, ...) {
+        return 0;
+    }
 
     const char* GetStringUTFChars(jstring str, jboolean* isCopy) {
         return "";

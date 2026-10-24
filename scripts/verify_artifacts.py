@@ -124,7 +124,7 @@ def print_status_matrix(host_ok: bool, cross_ok: bool, package_ok: bool):
     print("=" * 80)
     print(f"{'Dimension':<26} {'Status':<16} {'Notes'}")
     print("-" * 80)
-    print(f"{'HOST_TESTED':<26} {('PASS' if host_ok else 'FAIL'):<16} C++20 (27 native tests) & Python (29 tests) passed")
+    print(f"{'HOST_TESTED':<26} {('PASS' if host_ok else 'FAIL'):<16} C++20 (36 native tests) & Python (41 tests) passed")
     print(f"{'ANDROID_CROSS_COMPILED':<26} {('PASS' if cross_ok else 'FAIL'):<16} 4 ABIs (arm64, x86_64, arm, x86) compiled & verified")
     print(f"{'PACKAGED':<26} {('PASS' if package_ok else 'FAIL'):<16} Flashable ZIP assembled with complete permissions")
     print(f"{'DEVICE_TESTED':<26} {'NOT_RUN':<16} Gated on physical hardware attachment")
@@ -138,7 +138,20 @@ def main():
 
     cross_ok = False
     package_ok = False
-    host_ok = True  # Verified by host test runners
+    host_ok = False
+
+    # Derive host test status from live execution of native and python test suites
+    native_bin = ROOT_DIR / "build/test_native"
+    native_passed = False
+    if native_bin.is_file():
+        res_nat = subprocess.run([str(native_bin)], capture_output=True)
+        native_passed = (res_nat.returncode == 0)
+
+    res_py = subprocess.run([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+                            cwd=str(ROOT_DIR), capture_output=True)
+    py_passed = (res_py.returncode == 0)
+
+    host_ok = native_passed and py_passed
 
     print("\n[Stage 1/3] Verifying Multi-ABI Shared Libraries...")
     verify_so(readelf, ZYGISK_DIR / "arm64-v8a.so", "aarch64", "arm64-v8a.so")

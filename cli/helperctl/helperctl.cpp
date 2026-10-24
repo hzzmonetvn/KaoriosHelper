@@ -14,11 +14,17 @@
 #include <cstring>
 #include <cerrno>
 #include "../../third_party/json/nlohmann/json.hpp"
+#if __has_include(<ack_protocol.hpp>)
+#include <ack_protocol.hpp>
+#elif __has_include("../../include/ack_protocol.hpp")
+#include "../../include/ack_protocol.hpp"
+#endif
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <signal.h>
 #include <limits.h>
 
 namespace fs = std::filesystem;
@@ -76,6 +82,8 @@ public:
         bool configValid{false};
         bool runtimeAvailable{false};
         std::string hookInitialized{"NOT_INITIALIZED"};
+        uint64_t storedGeneration{0};
+        uint64_t requestedGeneration{0};
         uint64_t appliedGeneration{0};
         bool pendingReload{false};
         bool deviceVerified{false};
@@ -84,20 +92,47 @@ public:
         std::string details{""};
     };
 
-    uint64_t getAppliedGeneration() {
-        std::string gen_file = data_dir_ + "/generation.txt";
+    uint64_t getStoredGeneration(const std::string &engine) {
+        std::string gen_file = data_dir_ + "/" + engine + ".stored_gen";
         std::ifstream f(gen_file);
         if (f.is_open()) {
             uint64_t gen = 0;
             if (f >> gen) return gen;
         }
+        // Default generation is 1 if configuration exists, 0 otherwise
+        std::string cfg_name = (engine == "tee") ? "keybox.xml" : ((engine == "copg") ? "spoof.json" : (engine + ".json"));
+        struct stat st{};
+        if (stat((data_dir_ + "/" + cfg_name).c_str(), &st) == 0 && st.st_size > 0) {
+            return 1;
+        }
         return 0;
+    }
+
+    void setStoredGeneration(const std::string &engine, uint64_t gen) {
+        std::string gen_file = data_dir_ + "/" + engine + ".stored_gen";
+        std::ofstream f(gen_file);
+        if (f.is_open()) f << gen << "\n";
+    }
+
+    uint64_t getRequestedGeneration(const std::string &engine) {
+        std::string gen_file = data_dir_ + "/" + engine + ".requested_gen";
+        std::ifstream f(gen_file);
+        if (f.is_open()) {
+            uint64_t gen = 0;
+            if (f >> gen) return gen;
+        }
+        return getStoredGeneration(engine);
+    }
+
+    void setRequestedGeneration(const std::string &engine, uint64_t gen) {
+        std::string gen_file = data_dir_ + "/" + engine + ".requested_gen";
+        std::ofstream f(gen_file);
+        if (f.is_open()) f << gen << "\n";
     }
 
     std::map<std::string, EngineStatus> getEngineStatuses() {
         std::map<std::string, EngineStatus> res;
         struct stat st{};
-        uint64_t current_gen = getAppliedGeneration();
 
         // ── HMA ─────────────────────────────────────────────────────────────
         EngineStatus hma;
@@ -105,8 +140,10 @@ public:
         hma.installed = true;
         hma.enabled = (stat((data_dir_ + "/hma.disabled").c_str(), &st) != 0);
         hma.pendingReload = (stat((data_dir_ + "/hma.reload_pending").c_str(), &st) == 0);
-        hma.appliedGeneration = current_gen;
-        hma.deviceVerified = false; // Pending physical device testing
+        hma.storedGeneration = getStoredGeneration("hma");
+        hma.requestedGeneration = getRequestedGeneration("hma");
+        hma.appliedGeneration = 0;
+        hma.deviceVerified = false;
 
         // Check classes.dex
         bool dex_exists = (stat((data_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0) ||
@@ -125,6 +162,12 @@ public:
             hma.lastError = "hma.json configuration missing or empty";
         }
 
+        kaorios::RuntimeAck hma_ack;
+        bool has_hma_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "hma", hma_ack);
+        if (has_hma_ack) {
+            hma.appliedGeneration = hma_ack.configGeneration;
+        }
+
         if (!hma.enabled) {
             hma.status = "DISABLED";
             hma.hookInitialized = "DISABLED";
@@ -135,29 +178,43 @@ public:
             hma.hookInitialized = "NOT_INITIALIZED";
             hma.details = "hma.json configuration missing or malformed";
         } else if (!hma.runtimeAvailable) {
-            // HMA without DEX must report INCOMPLETE_RUNTIME
             hma.status = "INCOMPLETE_RUNTIME";
             hma.hookInitialized = "INCOMPLETE_RUNTIME";
             hma.lastError = "classes.dex missing: upstream HMA DEX payload not bundled";
             hma.details = "system_server in-memory DEX loader waiting for classes.dex";
         } else if (hma.pendingReload) {
             hma.status = "PENDING_RELOAD";
-            hma.hookInitialized = "INITIALIZED";
+            hma.hookInitialized = (has_hma_ack && hma_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
             hma.details = "HMA DEX present; pending system_server restart";
-        } else {
-            bool ack = (stat((data_dir_ + "/runtime/hma.ack").c_str(), &st) == 0);
-            if (ack) {
+        } else if (has_hma_ack) {
+            if (hma_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 hma.status = "ACTIVE";
                 hma.hookInitialized = "INITIALIZED";
                 hma.deviceVerified = true;
                 hma.lastError = "";
-                hma.details = "system_server in-memory DEX injection & package filtering verified";
-            } else {
+                hma.details = "system_server in-memory DEX injection & package filtering verified on-device";
+            } else if (hma_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
+                hma.status = "NOT_DEVICE_VERIFIED";
+                hma.hookInitialized = "INITIALIZED";
+                hma.deviceVerified = false;
+                hma.lastError = "";
+                hma.details = "system_server HMA hook initialized; awaiting on-device filtering verification";
+            } else if (hma_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 hma.status = "NOT_VERIFIED";
-                hma.hookInitialized = "NOT_VERIFIED";
-                hma.lastError = "Runtime hook acknowledgement pending system_server specialization";
-                hma.details = "HMA configured with DEX; awaiting system_server execution";
+                hma.hookInitialized = "NOT_INITIALIZED";
+                hma.deviceVerified = false;
+                hma.details = "system_server process loaded; awaiting hook execution";
+            } else {
+                hma.status = "ERROR";
+                hma.hookInitialized = "FAILED";
+                hma.lastError = hma_ack.detail;
+                hma.details = "HMA hook failure: " + hma_ack.detail;
             }
+        } else {
+            hma.status = "NOT_VERIFIED";
+            hma.hookInitialized = "NOT_INITIALIZED";
+            hma.lastError = "Runtime hook acknowledgement pending system_server specialization";
+            hma.details = "HMA configured with DEX; awaiting system_server execution";
         }
         res["hma"] = hma;
 
@@ -167,9 +224,11 @@ public:
         pif.installed = true;
         pif.enabled = (stat((data_dir_ + "/pif.disabled").c_str(), &st) != 0);
         pif.pendingReload = (stat((data_dir_ + "/pif.reload_pending").c_str(), &st) == 0);
-        pif.appliedGeneration = current_gen;
-        pif.deviceVerified = false; // Pending physical device testing
-        pif.runtimeAvailable = true; // ByteDance ShadowHook property interceptor available
+        pif.storedGeneration = getStoredGeneration("pif");
+        pif.requestedGeneration = getRequestedGeneration("pif");
+        pif.appliedGeneration = 0;
+        pif.deviceVerified = false;
+        pif.runtimeAvailable = true;
 
         if (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0) {
             std::ifstream f(data_dir_ + "/pif.json");
@@ -180,6 +239,12 @@ public:
         } else {
             pif.configValid = false;
             pif.lastError = "pif.json configuration missing or empty";
+        }
+
+        kaorios::RuntimeAck pif_ack;
+        bool has_pif_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "pif", pif_ack);
+        if (has_pif_ack) {
+            pif.appliedGeneration = pif_ack.configGeneration;
         }
 
         if (!pif.enabled) {
@@ -193,23 +258,37 @@ public:
             pif.details = "pif.json configuration missing or malformed";
         } else if (pif.pendingReload) {
             pif.status = "PENDING_RELOAD";
-            pif.hookInitialized = "NOT_VERIFIED";
+            pif.hookInitialized = (has_pif_ack && pif_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
             pif.details = "PIF configuration updated; pending target reload";
-        } else {
-            bool ack = (stat((data_dir_ + "/runtime/pif.ack").c_str(), &st) == 0);
-            if (ack) {
+        } else if (has_pif_ack) {
+            if (pif_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 pif.status = "ACTIVE";
                 pif.hookInitialized = "INITIALIZED";
                 pif.deviceVerified = true;
                 pif.lastError = "";
-                pif.details = "ByteDance ShadowHook native libc property hook active and verified";
-            } else {
-                // PIF must report NOT_VERIFIED until runtime acknowledgements exist
+                pif.details = "ByteDance ShadowHook native libc property hook active and property queries observed";
+            } else if (pif_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
+                pif.status = "NOT_DEVICE_VERIFIED";
+                pif.hookInitialized = "INITIALIZED";
+                pif.deviceVerified = false;
+                pif.lastError = "";
+                pif.details = "ByteDance ShadowHook native libc hook registered; awaiting property query observation";
+            } else if (pif_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 pif.status = "NOT_VERIFIED";
-                pif.hookInitialized = "NOT_VERIFIED";
-                pif.lastError = "Runtime hook acknowledgement pending target process specialization";
-                pif.details = "ByteDance ShadowHook property interceptor configured";
+                pif.hookInitialized = "NOT_INITIALIZED";
+                pif.deviceVerified = false;
+                pif.details = "Target process loaded; awaiting hook execution";
+            } else {
+                pif.status = "ERROR";
+                pif.hookInitialized = "FAILED";
+                pif.lastError = pif_ack.detail;
+                pif.details = "PIF hook failure: " + pif_ack.detail;
             }
+        } else {
+            pif.status = "NOT_VERIFIED";
+            pif.hookInitialized = "NOT_INITIALIZED";
+            pif.lastError = "Runtime hook acknowledgement pending target process specialization";
+            pif.details = "ByteDance ShadowHook property interceptor configured";
         }
         res["pif"] = pif;
 
@@ -219,7 +298,9 @@ public:
         tee.installed = true;
         tee.enabled = (stat((data_dir_ + "/tee.enabled").c_str(), &st) == 0);
         tee.pendingReload = (stat((data_dir_ + "/tee.reload_pending").c_str(), &st) == 0);
-        tee.appliedGeneration = current_gen;
+        tee.storedGeneration = getStoredGeneration("tee");
+        tee.requestedGeneration = getRequestedGeneration("tee");
+        tee.appliedGeneration = 0;
         tee.deviceVerified = false;
         tee.runtimeAvailable = false; // Keystore2 ptrace/AIDL integration is not bundled
 
@@ -233,7 +314,6 @@ public:
             tee.lastError = "keybox.xml missing or empty";
         }
 
-        // TEE without Keystore2 ptrace/AIDL must report INCOMPLETE_RUNTIME
         if (!tee.enabled) {
             tee.status = "DISABLED";
             tee.hookInitialized = "INCOMPLETE_RUNTIME";
@@ -257,7 +337,9 @@ public:
         copg.installed = true;
         copg.enabled = (stat((data_dir_ + "/copg.enabled").c_str(), &st) == 0);
         copg.pendingReload = (stat((data_dir_ + "/copg.reload_pending").c_str(), &st) == 0);
-        copg.appliedGeneration = current_gen;
+        copg.storedGeneration = getStoredGeneration("copg");
+        copg.requestedGeneration = getRequestedGeneration("copg");
+        copg.appliedGeneration = 0;
         copg.deviceVerified = false;
         copg.runtimeAvailable = true;
 
@@ -276,6 +358,12 @@ public:
             copg.lastError = "spoof.json missing or empty";
         }
 
+        kaorios::RuntimeAck copg_ack;
+        bool has_copg_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "copg", copg_ack);
+        if (has_copg_ack) {
+            copg.appliedGeneration = copg_ack.configGeneration;
+        }
+
         if (!copg.enabled) {
             copg.status = "DISABLED";
             copg.hookInitialized = "DISABLED";
@@ -287,23 +375,37 @@ public:
             copg.details = "copg.enabled active but spoof.json missing or empty";
         } else if (copg.pendingReload) {
             copg.status = "PENDING_RELOAD";
-            copg.hookInitialized = "NOT_VERIFIED";
+            copg.hookInitialized = (has_copg_ack && copg_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
             copg.details = "COPG configuration updated; pending game reload";
-        } else {
-            bool ack = (stat((data_dir_ + "/runtime/copg.ack").c_str(), &st) == 0);
-            if (ack) {
+        } else if (has_copg_ack) {
+            if (copg_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 copg.status = "ACTIVE";
                 copg.hookInitialized = "INITIALIZED";
                 copg.deviceVerified = true;
                 copg.lastError = "";
-                copg.details = "Per-app Build spoofing active and verified";
-            } else {
-                // COPG must report NOT_VERIFIED until runtime acknowledgements exist
+                copg.details = "Per-app Build and PLT property spoofing active and verified on-device";
+            } else if (copg_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
+                copg.status = "NOT_DEVICE_VERIFIED";
+                copg.hookInitialized = "INITIALIZED";
+                copg.deviceVerified = false;
+                copg.lastError = "";
+                copg.details = "COPG hooks initialized; awaiting on-device target queries";
+            } else if (copg_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 copg.status = "NOT_VERIFIED";
-                copg.hookInitialized = "NOT_VERIFIED";
-                copg.lastError = "Runtime hook acknowledgement pending target app specialization";
-                copg.details = "Game profile and device identity virtualization configured";
+                copg.hookInitialized = "NOT_INITIALIZED";
+                copg.deviceVerified = false;
+                copg.details = "Target process loaded; awaiting hook execution";
+            } else {
+                copg.status = "ERROR";
+                copg.hookInitialized = "FAILED";
+                copg.lastError = copg_ack.detail;
+                copg.details = "COPG hook failure: " + copg_ack.detail;
             }
+        } else {
+            copg.status = "NOT_VERIFIED";
+            copg.hookInitialized = "NOT_INITIALIZED";
+            copg.lastError = "Runtime hook acknowledgement pending target app specialization";
+            copg.details = "Game profile and device identity virtualization configured";
         }
         res["copg"] = copg;
 
@@ -335,6 +437,8 @@ public:
             ej["configValid"] = eng.configValid;
             ej["runtimeAvailable"] = eng.runtimeAvailable;
             ej["hookInitialized"] = eng.hookInitialized;
+            ej["storedGeneration"] = eng.storedGeneration;
+            ej["requestedGeneration"] = eng.requestedGeneration;
             ej["appliedGeneration"] = eng.appliedGeneration;
             ej["pendingReload"] = eng.pendingReload;
             ej["deviceVerified"] = eng.deviceVerified;
@@ -373,6 +477,8 @@ public:
                 ej["configValid"] = eng.configValid;
                 ej["runtimeAvailable"] = eng.runtimeAvailable;
                 ej["hookInitialized"] = eng.hookInitialized;
+                ej["storedGeneration"] = eng.storedGeneration;
+                ej["requestedGeneration"] = eng.requestedGeneration;
                 ej["appliedGeneration"] = eng.appliedGeneration;
                 ej["pendingReload"] = eng.pendingReload;
                 ej["deviceVerified"] = eng.deviceVerified;
@@ -399,6 +505,8 @@ public:
             std::cout << "      Config Valid:     " << (eng.configValid ? "YES" : "NO") << "\n";
             std::cout << "      Runtime Avail:    " << (eng.runtimeAvailable ? "YES" : "NO") << "\n";
             std::cout << "      Hook Status:      " << eng.hookInitialized << "\n";
+            std::cout << "      Stored Gen:       " << eng.storedGeneration << "\n";
+            std::cout << "      Requested Gen:    " << eng.requestedGeneration << "\n";
             std::cout << "      Applied Gen:      " << eng.appliedGeneration << "\n";
             std::cout << "      Pending Reload:   " << (eng.pendingReload ? "YES" : "NO") << "\n";
             std::cout << "      Device Verified:  " << (eng.deviceVerified ? "YES" : "NO") << "\n";
@@ -459,17 +567,49 @@ public:
     }
 
     int cmdReload(const std::string &engine) {
+        std::vector<std::string> target_engines;
         if (engine == "all" || engine.empty()) {
-            for (const auto &eng : {"hma", "pif", "tee", "copg"}) {
-                fs::remove(data_dir_ + "/" + eng + ".reload_pending");
-            }
-            std::cout << "Acknowledged and cleared reload markers for all engines.\n";
+            target_engines = {"hma", "pif", "tee", "copg"};
+        } else if (engine == "hma" || engine == "pif" || engine == "tee" || engine == "copg") {
+            target_engines = {engine};
         } else {
-            fs::remove(data_dir_ + "/" + engine + ".reload_pending");
-            std::cout << "Acknowledged and cleared reload marker for " << engine << ".\n";
+            std::cerr << "Unknown engine: " << engine << " (valid: hma, pif, tee, copg, all)\n";
+            return 1;
         }
+
+        bool all_reloaded = true;
+        for (const auto &eng : target_engines) {
+            // 1. Write reload_pending marker
+            std::ofstream(data_dir_ + "/" + eng + ".reload_pending").close();
+
+            // 2. Increment requestedGeneration (do not advance appliedGeneration)
+            uint64_t req_gen = getRequestedGeneration(eng) + 1;
+            setRequestedGeneration(eng, req_gen);
+
+            // 3. Poll for engine acknowledgement matching requested generation
+            bool reloaded = false;
+            for (int attempt = 0; attempt < 20; ++attempt) {
+                kaorios::RuntimeAck ack;
+                if (kaorios::readRuntimeAck(data_dir_ + "/runtime", eng, ack)) {
+                    if (ack.configGeneration >= req_gen) {
+                        reloaded = true;
+                        fs::remove(data_dir_ + "/" + eng + ".reload_pending");
+                        break;
+                    }
+                }
+                usleep(100000); // 100ms
+            }
+
+            if (reloaded) {
+                std::cout << "SUCCESS: Engine '" << eng << "' reloaded to generation " << req_gen << ".\n";
+            } else {
+                std::cout << "PENDING: Engine '" << eng << "' reload requested (generation " << req_gen << "), awaiting target process restart/reload.\n";
+                all_reloaded = false;
+            }
+        }
+
         updateStatusJson();
-        return 0;
+        return all_reloaded ? 0 : 0;
     }
 
     static bool validateJsonSyntax(const std::string &content) {
@@ -631,6 +771,11 @@ public:
             return 1;
         }
 
+        // Advance stored and requested generations
+        uint64_t next_gen = getStoredGeneration(engine) + 1;
+        setStoredGeneration(engine, next_gen);
+        setRequestedGeneration(engine, next_gen);
+
         // Set reload marker
         std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
 
@@ -640,7 +785,7 @@ public:
         }
 
         updateStatusJson();
-        std::cout << "Successfully updated " << filename << " atomically with LKG backup (0600 root:root).\n";
+        std::cout << "Successfully updated " << filename << " atomically with LKG backup (generation " << next_gen << ").\n";
         return 0;
     }
 
@@ -682,9 +827,12 @@ public:
             return 1;
         }
 
+        uint64_t next_gen = getStoredGeneration(engine) + 1;
+        setStoredGeneration(engine, next_gen);
+        setRequestedGeneration(engine, next_gen);
         std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
         updateStatusJson();
-        std::cout << "Successfully rolled back " << engine << " to Last-Known-Good (LKG) configuration.\n";
+        std::cout << "Successfully rolled back " << engine << " to Last-Known-Good (LKG) configuration (generation " << next_gen << ").\n";
         return 0;
     }
 

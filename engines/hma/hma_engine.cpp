@@ -5,6 +5,7 @@
 
 #include "hma_engine.hpp"
 #include "logging.hpp"
+#include "ack_protocol.hpp"
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -79,36 +80,23 @@ bool HmaEngine::loadConfig() {
     global_hidden_packages_.insert("org.apatch");
     global_hidden_packages_.insert("org.lsposed.manager");
 
-    std::string line;
-    std::string current_caller = "";
-    bool in_scope = false;
+    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    auto j = nlohmann::json::parse(content, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+        LOGE("HMA: Failed to parse %s as valid JSON", config_path.c_str());
+        return false;
+    }
 
-    while (std::getline(file, line)) {
-        // Fast JSON scanner for scope entries
-        if (line.find("\"scope\"") != std::string::npos) {
-            in_scope = true;
-            continue;
-        }
-
-        if (in_scope) {
-            size_t q1 = line.find('"');
-            if (q1 != std::string::npos) {
-                size_t q2 = line.find('"', q1 + 1);
-                if (q2 != std::string::npos) {
-                    std::string token = line.substr(q1 + 1, q2 - q1 - 1);
-                    if (token.find('.') != std::string::npos) {
-                        if (line.find('{') != std::string::npos || line.find(':') != std::string::npos) {
-                            current_caller = token;
-                            scope_map_[current_caller] = {};
-                        } else if (!current_caller.empty()) {
-                            scope_map_[current_caller].insert(token);
-                        }
-                    }
+    if (j.contains("scope") && j["scope"].is_object()) {
+        for (auto it = j["scope"].begin(); it != j["scope"].end(); ++it) {
+            std::string caller = it.key();
+            std::set<std::string> hidden;
+            if (it.value().is_array()) {
+                for (const auto &pkg : it.value()) {
+                    if (pkg.is_string()) hidden.insert(pkg.get<std::string>());
                 }
             }
-            if (line.find('}') != std::string::npos && line.find('{') == std::string::npos) {
-                current_caller.clear();
-            }
+            scope_map_[caller] = std::move(hidden);
         }
     }
 
@@ -385,14 +373,25 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
                     env_->ExceptionClear();
                 } else {
                     LOGI("HMA: ZygoteEntry.main() executed inside system_server");
-                    std::string ack_dir = data_dir_ + "/runtime";
-                    mkdir(ack_dir.c_str(), 0755);
-                    std::string ack_path = ack_dir + "/hma.ack";
-                    FILE *ack_f = fopen(ack_path.c_str(), "w");
-                    if (ack_f) {
-                        fprintf(ack_f, "system_server\n");
-                        fclose(ack_f);
+
+                    int hook_state = 3; // STATE_ENTRYPOINT_EXECUTED
+                    jmethodID getStateMid = env_->GetStaticMethodID(dex_entrypoint_, "getHookState", "()I");
+                    if (!env_->ExceptionCheck() && getStateMid) {
+                        hook_state = env_->CallStaticIntMethod(dex_entrypoint_, getStateMid);
+                        if (env_->ExceptionCheck()) env_->ExceptionClear();
                     }
+
+                    RuntimeAck ack;
+                    ack.engine = "hma";
+                    ack.processName = "system_server";
+                    ack.pid = getpid();
+                    ack.uid = 1000;
+                    ack.configGeneration = 1;
+                    ack.initResult = (hook_state >= 3) ? 0 : -1;
+                    ack.eventType = (hook_state >= 7) ? AckEventType::HOOK_OBSERVED :
+                                    ((hook_state >= 3) ? AckEventType::HOOK_INITIALIZED : AckEventType::PROCESS_LOADED);
+                    ack.detail = "HMA DEX loaded; hook state: " + std::to_string(hook_state);
+                    writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
                 }
             }
         }

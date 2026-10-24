@@ -118,28 +118,11 @@ if [ -d "$BACKUP_DIR" ] && [ "$(ls -A "$BACKUP_DIR" 2>/dev/null)" ]; then
   rm -rf "$BACKUP_DIR"
 fi
 
-# Ensure canonical configuration templates exist if not already configured
-[ -f "$MODPATH/data/pif.json" ] || cat > "$MODPATH/data/pif.json" << 'EOF'
-{
-  "MANUFACTURER": "Google",
-  "MODEL": "Pixel 7 Pro",
-  "FINGERPRINT": "google/cheetah_beta/cheetah:CANARY/ZP11.260918.007/16484274:user/release-keys",
-  "BRAND": "google",
-  "PRODUCT": "cheetah_beta",
-  "DEVICE": "cheetah",
-  "RELEASE": "14",
-  "ID": "ZP11.260918.007",
-  "INCREMENTAL": "16484274",
-  "TYPE": "user",
-  "TAGS": "release-keys",
-  "SECURITY_PATCH": "2026-10-05",
-  "DEVICE_INITIAL_SDK_INT": "33",
-  "spoofBuild": 1,
-  "spoofProps": 1,
-  "spoofProvider": 0,
-  "spoofSignature": 0
-}
-EOF
+# Check existing user configuration; do not create fake PIF profiles
+if [ ! -f "$MODPATH/data/pif.json" ]; then
+  ui_print "! Note: PIF engine is unconfigured (pif.json absent)."
+  ui_print "  Supply a valid custom profile via 'helperctl config set pif <file.json>'."
+fi
 
 [ -f "$MODPATH/data/spoof.json" ] || cat > "$MODPATH/data/spoof.json" << 'EOF'
 {
@@ -173,27 +156,72 @@ EOF
 }
 EOF
 
-# ABI binary selection
+# ABI binary selection (preserve both 64-bit and 32-bit libraries on mixed-ABI devices)
 if [ -d "$MODPATH/zygisk" ]; then
-  if echo "$ABILIST" | grep -qv "x86_64"; then
-    rm -f "$MODPATH/zygisk/x86_64.so" 2>/dev/null
+  ALL_ABIS="$ARCH $ABILIST"
+  if ! echo "$ALL_ABIS" | grep -qE "arm64|aarch64"; then
+    rm -f "$MODPATH/zygisk/arm64-v8a.so" 2>/dev/null || true
   fi
-  if echo "$ABILIST" | grep -qvE "armeabi|armv7|arm"; then
-    rm -f "$MODPATH/zygisk/armeabi-v7a.so" 2>/dev/null
+  if ! echo "$ALL_ABIS" | grep -qE "armeabi|armv7|arm"; then
+    rm -f "$MODPATH/zygisk/armeabi-v7a.so" 2>/dev/null || true
+  fi
+  if ! echo "$ALL_ABIS" | grep -qE "x86_64|amd64"; then
+    rm -f "$MODPATH/zygisk/x86_64.so" 2>/dev/null || true
+  fi
+  if ! echo "$ALL_ABIS" | grep -qE "x86|i686"; then
+    rm -f "$MODPATH/zygisk/x86.so" 2>/dev/null || true
   fi
 fi
 
-# Multi-ABI helperctl installation
-if [ "$ARCH" = "x64" ] || [ "$ARCH" = "x86_64" ] || echo "$ARCH" | grep -q "x86_64"; then
-  if [ -f "$MODPATH/bin/x86_64/helperctl" ]; then
-    cp -f "$MODPATH/bin/x86_64/helperctl" "$MODPATH/helperctl"
-    ui_print "  Installed native helperctl (x86_64)"
-  fi
-elif [ "$ARCH" = "arm64" ] || [ "$ARCH" = "arm64-v8a" ] || echo "$ARCH" | grep -q "arm64"; then
-  if [ -f "$MODPATH/bin/arm64-v8a/helperctl" ]; then
-    cp -f "$MODPATH/bin/arm64-v8a/helperctl" "$MODPATH/helperctl"
-    ui_print "  Installed native helperctl (arm64-v8a)"
-  fi
+# Multi-ABI helperctl installation (arm64-v8a, armeabi-v7a, x86_64, x86)
+HELPERCTL_INSTALLED=false
+for abi_cand in "$ARCH" $(echo "$ABILIST" | tr ',' ' '); do
+  case "$abi_cand" in
+    arm64*|aarch64*)
+      if [ -f "$MODPATH/bin/arm64-v8a/helperctl" ]; then
+        cp -f "$MODPATH/bin/arm64-v8a/helperctl" "$MODPATH/helperctl"
+        ui_print "  Installed native helperctl (arm64-v8a)"
+        HELPERCTL_INSTALLED=true
+        break
+      fi
+      ;;
+    armeabi*|armv7*|arm*)
+      if [ -f "$MODPATH/bin/armeabi-v7a/helperctl" ]; then
+        cp -f "$MODPATH/bin/armeabi-v7a/helperctl" "$MODPATH/helperctl"
+        ui_print "  Installed native helperctl (armeabi-v7a)"
+        HELPERCTL_INSTALLED=true
+        break
+      fi
+      ;;
+    x86_64*|amd64*)
+      if [ -f "$MODPATH/bin/x86_64/helperctl" ]; then
+        cp -f "$MODPATH/bin/x86_64/helperctl" "$MODPATH/helperctl"
+        ui_print "  Installed native helperctl (x86_64)"
+        HELPERCTL_INSTALLED=true
+        break
+      fi
+      ;;
+    x86*|i686*)
+      if [ -f "$MODPATH/bin/x86/helperctl" ]; then
+        cp -f "$MODPATH/bin/x86/helperctl" "$MODPATH/helperctl"
+        ui_print "  Installed native helperctl (x86)"
+        HELPERCTL_INSTALLED=true
+        break
+      fi
+      ;;
+  esac
+done
+
+if ! $HELPERCTL_INSTALLED; then
+  # Fallback to any available helperctl binary
+  for fallback_bin in "$MODPATH/bin/"*"/helperctl"; do
+    if [ -f "$fallback_bin" ]; then
+      cp -f "$fallback_bin" "$MODPATH/helperctl"
+      ui_print "  Installed fallback helperctl ($fallback_bin)"
+      HELPERCTL_INSTALLED=true
+      break
+    fi
+  done
 fi
 rm -rf "$MODPATH/bin" 2>/dev/null || true
 chmod 0755 "$MODPATH/helperctl" 2>/dev/null || true

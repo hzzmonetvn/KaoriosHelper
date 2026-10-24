@@ -67,6 +67,10 @@ jobs:
         run: |
           python3 scripts/package_module.py
 
+      - name: Run Artifact Integration Tests
+        run: |
+          PYTHONPATH=. python3 -m unittest discover -s tests -p "test_*.py"
+
       - name: Verify ELFs, Packaging & Generate Status Report
         run: |
           python3 scripts/verify_artifacts.py

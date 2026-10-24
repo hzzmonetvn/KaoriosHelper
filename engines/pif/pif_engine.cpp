@@ -5,12 +5,20 @@
 
 #include "pif_engine.hpp"
 #include "logging.hpp"
+#if __has_include(<ack_protocol.hpp>)
+#include <ack_protocol.hpp>
+#elif __has_include("../../include/ack_protocol.hpp")
+#include "../../include/ack_protocol.hpp"
+#endif
 #include <fstream>
 #include <cstdio>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <cstring>
 #include <algorithm>
+#include <atomic>
+
+static std::atomic<uint64_t> s_properties_intercepted{0};
 
 #if __has_include(<nlohmann/json.hpp>)
 #include <nlohmann/json.hpp>
@@ -139,6 +147,11 @@ void PifEngine::installPropertyHook() {
     if (hook_installed_) return;
 
 #if defined(__ANDROID__)
+#if defined(__i386__) && !defined(__x86_64__)
+    LOGW("PIF: 32-bit x86 architecture detected. ByteDance ShadowHook inline hooking is unsupported on 32-bit x86 (stub fallback). Native libc property interception unavailable on this ABI.");
+    hook_installed_ = false;
+    return;
+#else
     int sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
     if (sh_ret != 0 && sh_ret != SHADOWHOOK_ERRNO_PENDING) {
         LOGW("PIF: shadowhook_init returned %d (errno %d)", sh_ret, shadowhook_get_errno());
@@ -163,6 +176,7 @@ void PifEngine::installPropertyHook() {
 
     hook_installed_ = true;
     LOGI("PIF: ShadowHook successfully intercepted __system_property_read_callback at %p (handle=%p)", sym_addr, handle);
+#endif
 #else
     hook_installed_ = true;
     LOGI("PIF: [Mock] Native Bionic libc property hook registered");
@@ -172,84 +186,85 @@ void PifEngine::installPropertyHook() {
 bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof_provider) {
     std::string config_path = data_dir_ + "/pif.json";
     struct stat st{};
-    bool use_fallback = false;
 
     spoof_provider = 0;
     spoof_props_ = 1;
     spoof_build_ = 1;
 
     if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
-        LOGW("PIF config missing or empty: %s, engaging known-good fallback profile", config_path.c_str());
-        use_fallback = true;
+        LOGW("PIF: Configuration file missing or empty at %s. Engine inactive until configured.", config_path.c_str());
+        props.clear();
+        return false;
+    }
+
+    std::ifstream file(config_path);
+    if (!file.is_open()) {
+        LOGW("PIF: Failed to open %s", config_path.c_str());
+        if (!last_valid_props_.empty()) {
+            LOGI("PIF: Retaining last-known-good user configuration");
+            props = last_valid_props_;
+            return true;
+        }
+        props.clear();
+        return false;
     }
 
     nlohmann::json j;
-    if (!use_fallback) {
-        std::ifstream file(config_path);
-        if (!file.is_open()) {
-            LOGW("PIF: Failed to open %s, using known-good fallback", config_path.c_str());
-            use_fallback = true;
-        } else {
-            try {
-                file >> j;
-                if (!j.is_object()) {
-                    LOGW("PIF: JSON root is not an object in %s, using known-good fallback", config_path.c_str());
-                    use_fallback = true;
-                }
-            } catch (const std::exception &e) {
-                LOGW("PIF: Failed to parse %s as JSON (%s), using known-good fallback", config_path.c_str(), e.what());
-                use_fallback = true;
+    try {
+        file >> j;
+        if (!j.is_object()) {
+            LOGW("PIF: JSON root is not an object in %s", config_path.c_str());
+            if (!last_valid_props_.empty()) {
+                LOGI("PIF: Retaining last-known-good user configuration");
+                props = last_valid_props_;
+                return true;
             }
+            props.clear();
+            return false;
         }
+    } catch (const std::exception &e) {
+        LOGW("PIF: Failed to parse %s as JSON (%s)", config_path.c_str(), e.what());
+        if (!last_valid_props_.empty()) {
+            LOGI("PIF: Retaining last-known-good user configuration");
+            props = last_valid_props_;
+            return true;
+        }
+        props.clear();
+        return false;
     }
 
-    if (use_fallback) {
-        props = {
-            {"MANUFACTURER", "Google"},
-            {"BRAND", "google"},
-            {"PRODUCT", "husky"},
-            {"DEVICE", "husky"},
-            {"MODEL", "Pixel 8 Pro"},
-            {"FINGERPRINT", "google/husky/husky:14/UD1A.230803.041/10808477:user/release-keys"},
-            {"SECURITY_PATCH", "2024-05-05"},
-            {"ID", "UD1A.230803.041"},
-            {"TYPE", "user"},
-            {"TAGS", "release-keys"},
-            {"INCREMENTAL", "10808477"},
-            {"RELEASE", "14"}
-        };
-        device_initial_sdk_int_ = 34;
-        spoof_provider = 0;
-        spoof_props_ = 1;
-        spoof_build_ = 1;
-    } else {
+    if (j.empty() || (j.contains("enabled") && !j["enabled"].get<bool>())) {
+        LOGI("PIF: Configuration is empty or explicitly disabled");
         props.clear();
-        for (auto it = j.begin(); it != j.end(); ++it) {
-            const std::string &key = it.key();
-            const auto &val = it.value();
+        return false;
+    }
 
-            if (key == "spoofProvider") {
-                if (val.is_number()) spoof_provider = val.get<int>();
-                else if (val.is_string()) spoof_provider = std::atoi(val.get<std::string>().c_str());
-                else if (val.is_boolean()) spoof_provider = val.get<bool>() ? 1 : 0;
-            } else if (key == "spoofProps") {
-                if (val.is_number()) spoof_props_ = val.get<int>();
-                else if (val.is_string()) spoof_props_ = std::atoi(val.get<std::string>().c_str());
-                else if (val.is_boolean()) spoof_props_ = val.get<bool>() ? 1 : 0;
-            } else if (key == "spoofBuild") {
-                if (val.is_number()) spoof_build_ = val.get<int>();
-                else if (val.is_string()) spoof_build_ = std::atoi(val.get<std::string>().c_str());
-                else if (val.is_boolean()) spoof_build_ = val.get<bool>() ? 1 : 0;
-            } else if (key == "DEVICE_INITIAL_SDK_INT" || key == "FIRST_API_LEVEL") {
-                if (val.is_number()) device_initial_sdk_int_ = val.get<int>();
-                else if (val.is_string()) device_initial_sdk_int_ = std::atoi(val.get<std::string>().c_str());
-            } else if (val.is_string()) {
-                props[key] = val.get<std::string>();
-            } else if (val.is_number_integer()) {
-                props[key] = std::to_string(val.get<int64_t>());
-            } else if (val.is_boolean()) {
-                props[key] = val.get<bool>() ? "1" : "0";
-            }
+    props.clear();
+    for (auto it = j.begin(); it != j.end(); ++it) {
+        const std::string &key = it.key();
+        const auto &val = it.value();
+
+        if (key == "spoofProvider") {
+            if (val.is_number()) spoof_provider = val.get<int>();
+            else if (val.is_string()) spoof_provider = std::atoi(val.get<std::string>().c_str());
+            else if (val.is_boolean()) spoof_provider = val.get<bool>() ? 1 : 0;
+        } else if (key == "spoofProps") {
+            if (val.is_number()) spoof_props_ = val.get<int>();
+            else if (val.is_string()) spoof_props_ = std::atoi(val.get<std::string>().c_str());
+            else if (val.is_boolean()) spoof_props_ = val.get<bool>() ? 1 : 0;
+        } else if (key == "spoofBuild") {
+            if (val.is_number()) spoof_build_ = val.get<int>();
+            else if (val.is_string()) spoof_build_ = std::atoi(val.get<std::string>().c_str());
+            else if (val.is_boolean()) spoof_build_ = val.get<bool>() ? 1 : 0;
+        } else if (key == "DEVICE_INITIAL_SDK_INT" || key == "FIRST_API_LEVEL") {
+            if (val.is_number()) device_initial_sdk_int_ = val.get<int>();
+            else if (val.is_string()) device_initial_sdk_int_ = std::atoi(val.get<std::string>().c_str());
+        } else if (val.is_string()) {
+            props[key] = val.get<std::string>();
+        } else if (val.is_number_integer()) {
+            props[key] = std::to_string(val.get<int64_t>());
+        } else if (val.is_boolean()) {
+            props[key] = val.get<bool>() ? "1" : "0";
         }
     }
 
@@ -390,15 +405,43 @@ void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
         }
     }
 
-    LOGI("PIF properties and native hooks applied successfully in %s", process_name.c_str());
+    LOGI("PIF properties and native hooks specialization completed in %s", process_name.c_str());
 
-    std::string ack_dir = data_dir_ + "/runtime";
-    mkdir(ack_dir.c_str(), 0755);
-    std::string ack_path = ack_dir + "/pif.ack";
-    FILE *ack_f = fopen(ack_path.c_str(), "w");
-    if (ack_f) {
-        fprintf(ack_f, "%s\n", process_name.c_str());
-        fclose(ack_f);
+    RuntimeAck ack;
+    ack.engine = "pif";
+    ack.processName = process_name;
+    ack.pid = getpid();
+    ack.uid = getuid();
+    ack.configGeneration = applied_generation_;
+
+    if (hook_installed_) {
+        ack.initResult = 0;
+        ack.eventType = (s_properties_intercepted.load() > 0) ? AckEventType::HOOK_OBSERVED : AckEventType::HOOK_INITIALIZED;
+        ack.detail = "ShadowHook Bionic libc __system_property_read_callback active";
+    } else {
+        ack.initResult = -1;
+        ack.errorCode = ENOSYS;
+        ack.eventType = AckEventType::APPLY_FAILED;
+#if defined(__i386__) && !defined(__x86_64__)
+        ack.detail = "ShadowHook inline hook engine unsupported on 32-bit x86 (stub fallback)";
+#else
+        ack.detail = "ShadowHook hook failed or unsupported on this ABI";
+#endif
+    }
+
+    if (api_) {
+        int sock = api_->connectCompanion();
+        if (sock >= 0) {
+            std::string msg = "ack:" + ack.toJson().dump();
+            write(sock, msg.data(), msg.size());
+            int resp = -1;
+            read(sock, &resp, sizeof(resp));
+            close(sock);
+        } else if (geteuid() == 0) {
+            writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+        }
+    } else if (geteuid() == 0) {
+        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
     }
 }
 

@@ -10,6 +10,7 @@
 #include "pif_engine.hpp"
 #include "tee_engine.hpp"
 #include "copg_engine.hpp"
+#include "ack_protocol.hpp"
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
@@ -72,7 +73,7 @@ static void companion_handler(int client_socket) {
         LOGW("KaoriosHelper companion: getsockopt(SO_PEERCRED) failed: %s", strerror(errno));
     }
 
-    char buf[512] = {0};
+    char buf[4096] = {0};
     ssize_t bytes_read = read(client_socket, buf, sizeof(buf) - 1);
     if (bytes_read <= 0) {
         close(client_socket);
@@ -169,16 +170,31 @@ static void companion_handler(int client_socket) {
         return r;
     };
 
-    if (command == "mount_spoof") {
-        const char *spoof_path = "/data/adb/modules/kaorioshelper/data/cpuinfo_spoof";
-        if (access(spoof_path, F_OK) != 0) {
+    if (command == "mount_spoof" || command.rfind("mount_cpu:", 0) == 0) {
+        std::string spoof_path = "/data/adb/modules/kaorioshelper/data/cpuinfo_spoof";
+        if (command.rfind("mount_cpu:", 0) == 0) {
+            std::string rem = command.substr(10);
+            auto colon = rem.find(':');
+            if (colon != std::string::npos) {
+                std::string pid_str = rem.substr(0, colon);
+                std::string custom_src = rem.substr(colon + 1);
+                pid_t req_pid = std::atoi(pid_str.c_str());
+                if (req_pid > 1 && (cr.uid == 0 || target_pid == req_pid)) {
+                    target_pid = req_pid;
+                }
+                if (!custom_src.empty()) {
+                    spoof_path = custom_src;
+                }
+            }
+        }
+        if (access(spoof_path.c_str(), F_OK) != 0) {
             spoof_path = "/data/adb/modules/COPG/cpuinfo_spoof";
         }
-        if (access(spoof_path, F_OK) == 0) {
+        if (access(spoof_path.c_str(), F_OK) == 0) {
             result = run_in_target_ns([&]() -> int {
                 umount2("/proc/cpuinfo", MNT_DETACH);
-                if (mount(spoof_path, "/proc/cpuinfo", nullptr, MS_BIND, nullptr) == 0) {
-                    LOGI("KaoriosHelper companion: mounted cpuinfo_spoof -> /proc/cpuinfo for pid=%d", target_pid);
+                if (mount(spoof_path.c_str(), "/proc/cpuinfo", nullptr, MS_BIND, nullptr) == 0) {
+                    LOGI("KaoriosHelper companion: mounted %s -> /proc/cpuinfo for pid=%d", spoof_path.c_str(), target_pid);
                     return 0;
                 } else {
                     LOGW("KaoriosHelper companion: mount(MS_BIND) failed: %s", strerror(errno));
@@ -186,7 +202,7 @@ static void companion_handler(int client_socket) {
                 }
             });
         } else {
-            LOGW("KaoriosHelper companion: cpuinfo_spoof file not found at %s", spoof_path);
+            LOGW("KaoriosHelper companion: cpuinfo_spoof file not found at %s", spoof_path.c_str());
         }
     } else if (command == "unmount_spoof") {
         result = run_in_target_ns([&]() -> int {
@@ -199,6 +215,25 @@ static void companion_handler(int client_socket) {
                 return uerr;
             }
         });
+    } else if (command.rfind("ack:", 0) == 0) {
+        // Safe privileged runtime acknowledgement submission
+        std::string payload = command.substr(4);
+        auto j = nlohmann::json::parse(payload, nullptr, false);
+        if (!j.is_discarded() && j.is_object()) {
+            RuntimeAck ack;
+            if (RuntimeAck::fromJson(j, ack)) {
+                // Securely override PID & UID with peer credentials from kernel
+                ack.pid = target_pid;
+                ack.uid = cr.uid;
+                std::string runtime_dir = "/data/adb/modules/kaorioshelper/data/runtime";
+                if (writeRuntimeAckDirect(runtime_dir, ack)) {
+                    LOGI("KaoriosHelper companion: committed runtime ack for %s (%s)", ack.engine.c_str(), ack.processName.c_str());
+                    result = 0;
+                } else {
+                    LOGW("KaoriosHelper companion: writeRuntimeAckDirect failed for %s", ack.engine.c_str());
+                }
+            }
+        }
     } else {
         LOGW("KaoriosHelper companion: unrecognized command '%s'", command.c_str());
     }

@@ -10,6 +10,7 @@
 #include <set>
 #include <map>
 #include <mutex>
+#include <atomic>
 #include <sys/types.h>
 #include "engine.hpp"
 
@@ -73,6 +74,8 @@ public:
 
     // Dynamic property override lookup for native PLT hooks
     bool resolvePropertyOverride(const std::string &name, std::string &out_value) const;
+    void recordPropertyIntercepted() { properties_intercepted_++; }
+    uint64_t getInterceptedCount() const { return properties_intercepted_.load(); }
     static CopgEngine* getActiveInstance();
 
 private:
@@ -91,6 +94,14 @@ private:
     CopgDeviceInfo current_device_info_;
     CopgPackageFlags current_flags_;
     bool active_for_current_process_ = false;
+
+    std::atomic<uint64_t> properties_intercepted_{0};
+    bool plt_commit_succeeded_ = false;
+    bool cpu_mount_active_ = false;
+    size_t libraries_discovered_{0};
+    size_t hooks_attempted_{0};
+    size_t hooks_registered_{0};
+    uint64_t applied_generation_{0};
 
     void applyBuildSpoofing(const CopgDeviceInfo &info);
 };

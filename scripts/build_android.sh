@@ -103,6 +103,7 @@ build_arm64() {
     mkdir -p "${BUILD_DIR}"
 
     local INCLUDES=(
+        "-I${ROOT_DIR}/include"
         "-I${ROOT_DIR}/third_party/zygisk"
         "-I${ROOT_DIR}/third_party/json"
         "-I${ROOT_DIR}/zygisk/include"
@@ -189,6 +190,7 @@ build_arm64() {
     echo "Compiling native helperctl CLI for Android ARM64..."
     "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE \
         -I"${ROOT_DIR}/third_party/json" \
+        -I"${ROOT_DIR}/include" \
         -Wl,-z,max-page-size=16384 \
         "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
         -o "${TARGET_CTL}"
@@ -228,6 +230,7 @@ build_x86_64() {
     mkdir -p "${BUILD_DIR}"
 
     local INCLUDES=(
+        "-I${ROOT_DIR}/include"
         "-I${ROOT_DIR}/third_party/zygisk"
         "-I${ROOT_DIR}/third_party/json"
         "-I${ROOT_DIR}/zygisk/include"
@@ -285,6 +288,7 @@ build_x86_64() {
     echo "Compiling native helperctl CLI for Android x86_64..."
     "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE \
         -I"${ROOT_DIR}/third_party/json" \
+        -I"${ROOT_DIR}/include" \
         -Wl,-z,max-page-size=16384 \
         "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
         -o "${TARGET_CTL}"
@@ -310,6 +314,7 @@ build_armeabi_v7a() {
     mkdir -p "${BUILD_DIR}"
 
     local INCLUDES=(
+        "-I${ROOT_DIR}/include"
         "-I${ROOT_DIR}/third_party/zygisk"
         "-I${ROOT_DIR}/third_party/json"
         "-I${ROOT_DIR}/zygisk/include"
@@ -396,6 +401,7 @@ build_armeabi_v7a() {
     echo "Compiling native helperctl CLI for Android ARM32..."
     "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE -mthumb \
         -I"${ROOT_DIR}/third_party/json" \
+        -I"${ROOT_DIR}/include" \
         "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
         -o "${TARGET_CTL}"
     "${STRIP}" --strip-unneeded "${TARGET_CTL}"
@@ -420,6 +426,7 @@ build_x86() {
     mkdir -p "${BUILD_DIR}"
 
     local INCLUDES=(
+        "-I${ROOT_DIR}/include"
         "-I${ROOT_DIR}/third_party/zygisk"
         "-I${ROOT_DIR}/third_party/json"
         "-I${ROOT_DIR}/zygisk/include"
@@ -475,6 +482,7 @@ build_x86() {
     echo "Compiling native helperctl CLI for Android x86..."
     "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE \
         -I"${ROOT_DIR}/third_party/json" \
+        -I"${ROOT_DIR}/include" \
         "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
         -o "${TARGET_CTL}"
     "${STRIP}" --strip-unneeded "${TARGET_CTL}"

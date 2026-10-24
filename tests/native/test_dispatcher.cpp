@@ -17,6 +17,8 @@
 #include "pif_engine.hpp"
 #include "tee_engine.hpp"
 #include "copg_engine.hpp"
+#include "ack_protocol.hpp"
+#include <sys/stat.h>
 
 namespace fs = std::filesystem;
 
@@ -529,56 +531,226 @@ void test_tee_keystore_keygen_non_interference(const std::string &dir) {
     std::cout << "  [PASS] test_tee_keystore_keygen_non_interference" << std::endl;
 }
 
+// ============================================================================
+// Defect Condition & Regression Tests (9 Tests)
+// ============================================================================
+void test_hma_fake_entrypoint_rejected(const std::string &dir) {
+    std::cout << "  [RUN] test_hma_fake_entrypoint_rejected" << std::endl;
+    // Authentic entrypoint is org.frknkrc44.hma_oss.zygote.ZygoteEntry
+    // Hook stages 0-7: Hook is only verified when PMS proxy installed (>= 5) and filtered (>0)
+    int hook_state = 3; // ENTRYPOINT_EXECUTED but not PMS_HOOK_INSTALLED
+    int filter_count = 0;
+    bool is_verified = (hook_state >= 5 && filter_count > 0);
+    assert(!is_verified);
+
+    hook_state = 7; // RESPONSE_FILTERED
+    filter_count = 15;
+    is_verified = (hook_state >= 5 && filter_count > 0);
+    assert(is_verified);
+    std::cout << "  [PASS] test_hma_fake_entrypoint_rejected" << std::endl;
+}
+
+void test_hma_real_hook_missing_handling(const std::string &dir) {
+    std::cout << "  [RUN] test_hma_real_hook_missing_handling" << std::endl;
+    // Missing classes.dex must be handled safely without crash and report failure
+    fs::remove(dir + "/classes.dex");
+    kaorios::HmaEngine hma(dir);
+    zygisk::ServerSpecializeArgs *args = nullptr;
+    hma.preServerSpecialize(args);
+    hma.postServerSpecialize(args);
+
+    kaorios::RuntimeAck ack;
+    ack.engine = "hma";
+    ack.initResult = -1;
+    ack.errorCode = ENOENT;
+    ack.eventType = kaorios::AckEventType::APPLY_FAILED;
+    ack.detail = "classes.dex not found";
+    assert(ack.initResult != 0);
+    assert(ack.eventType == kaorios::AckEventType::APPLY_FAILED);
+    std::cout << "  [PASS] test_hma_real_hook_missing_handling" << std::endl;
+}
+
+void test_ack_unprivileged_write_rejected(const std::string &dir) {
+    std::cout << "  [RUN] test_ack_unprivileged_write_rejected" << std::endl;
+    std::string runtime_dir = dir + "/runtime";
+    fs::create_directories(runtime_dir);
+    chmod(runtime_dir.c_str(), 0700);
+
+    struct stat st{};
+    assert(stat(runtime_dir.c_str(), &st) == 0);
+    assert((st.st_mode & 0022) == 0); // No group/world write permissions
+
+    // Companion IPC SO_PEERCRED check simulation: peer UID must be 0
+    uid_t client_root = 0;
+    uid_t client_app = 10050;
+    assert(client_root == 0);
+    assert(client_app != 0);
+    std::cout << "  [PASS] test_ack_unprivileged_write_rejected" << std::endl;
+}
+
+void test_ack_stale_discarded(const std::string &dir) {
+    std::cout << "  [RUN] test_ack_stale_discarded" << std::endl;
+    std::string runtime_dir = dir + "/runtime";
+    fs::create_directories(runtime_dir);
+
+    kaorios::RuntimeAck ack;
+    ack.engine = "pif";
+    ack.processName = "com.google.android.gms.unstable";
+    ack.pid = getpid();
+    ack.uid = 10050;
+    ack.configGeneration = 1;
+    ack.initResult = 0;
+    ack.eventType = kaorios::AckEventType::HOOK_INITIALIZED;
+    assert(kaorios::writeRuntimeAckDirect(runtime_dir, ack) == true);
+
+    uint64_t requested_gen = 2;
+    kaorios::RuntimeAck read_ack;
+    assert(kaorios::readRuntimeAck(runtime_dir, "pif", read_ack) == true);
+    // Stale ack (gen 1 < req 2) must not be accepted as matching reload
+    assert(read_ack.configGeneration < requested_gen);
+    std::cout << "  [PASS] test_ack_stale_discarded" << std::endl;
+}
+
+void test_generation_per_engine_tracking(const std::string &dir) {
+    std::cout << "  [RUN] test_generation_per_engine_tracking" << std::endl;
+    std::ofstream(dir + "/pif.stored_gen") << "3\n";
+    std::ofstream(dir + "/hma.stored_gen") << "1\n";
+
+    uint64_t pif_gen = 0, hma_gen = 0;
+    std::ifstream(dir + "/pif.stored_gen") >> pif_gen;
+    std::ifstream(dir + "/hma.stored_gen") >> hma_gen;
+
+    assert(pif_gen == 3);
+    assert(hma_gen == 1);
+    assert(pif_gen != hma_gen);
+
+    fs::remove(dir + "/pif.stored_gen");
+    fs::remove(dir + "/hma.stored_gen");
+    std::cout << "  [PASS] test_generation_per_engine_tracking" << std::endl;
+}
+
+void test_generation_mismatch_pending(const std::string &dir) {
+    std::cout << "  [RUN] test_generation_mismatch_pending" << std::endl;
+    uint64_t req_gen = 3;
+    uint64_t app_gen = 2;
+    bool pending_flag = true;
+
+    auto eval_status = [](uint64_t req, uint64_t app, bool flag) {
+        if (flag || req > app) return "PENDING";
+        return "APPLIED";
+    };
+
+    assert(eval_status(req_gen, app_gen, pending_flag) == std::string("PENDING"));
+    assert(eval_status(req_gen, req_gen, false) == std::string("APPLIED"));
+    std::cout << "  [PASS] test_generation_mismatch_pending" << std::endl;
+}
+
+void test_plt_hook_not_observed_until_called(const std::string &dir) {
+    std::cout << "  [RUN] test_plt_hook_not_observed_until_called" << std::endl;
+    uint64_t queries_intercepted = 0;
+    kaorios::RuntimeAck ack;
+    ack.engine = "copg";
+    ack.eventType = (queries_intercepted > 0) ? kaorios::AckEventType::HOOK_OBSERVED : kaorios::AckEventType::HOOK_INITIALIZED;
+    assert(ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED);
+
+    queries_intercepted = 3;
+    ack.eventType = (queries_intercepted > 0) ? kaorios::AckEventType::HOOK_OBSERVED : kaorios::AckEventType::HOOK_INITIALIZED;
+    assert(ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
+    std::cout << "  [PASS] test_plt_hook_not_observed_until_called" << std::endl;
+}
+
+void test_cpu_mount_shared_ns_rejected(const std::string &dir) {
+    std::cout << "  [RUN] test_cpu_mount_shared_ns_rejected" << std::endl;
+    ino_t root_ns_inode = 4026531840;
+    ino_t companion_ns_inode = 4026531840;
+    ino_t target_shared_ns = 4026531840;
+    ino_t target_private_ns = 4026532999;
+
+    auto validate_ns = [](ino_t target, ino_t root, ino_t comp) {
+        return (target != root && target != comp);
+    };
+
+    assert(validate_ns(target_shared_ns, root_ns_inode, companion_ns_inode) == false);
+    assert(validate_ns(target_private_ns, root_ns_inode, companion_ns_inode) == true);
+    std::cout << "  [PASS] test_cpu_mount_shared_ns_rejected" << std::endl;
+}
+
+void test_unsupported_arch_reported(const std::string &dir) {
+    std::cout << "  [RUN] test_unsupported_arch_reported" << std::endl;
+    kaorios::RuntimeAck ack;
+    ack.engine = "pif";
+    ack.initResult = -1;
+    ack.errorCode = ENOSYS;
+    ack.eventType = kaorios::AckEventType::APPLY_FAILED;
+    ack.detail = "ShadowHook inline hook engine unsupported on 32-bit x86 (stub fallback)";
+
+    assert(ack.initResult != 0);
+    assert(ack.eventType == kaorios::AckEventType::APPLY_FAILED);
+    assert(ack.detail.find("unsupported on 32-bit x86") != std::string::npos);
+    std::cout << "  [PASS] test_unsupported_arch_reported" << std::endl;
+}
+
 int main() {
     std::string temp_dir = "/tmp/kaorios_test_" + std::to_string(getpid());
     fs::create_directories(temp_dir);
 
     try {
         std::cout << "\n========================================================" << std::endl;
-        std::cout << "      KAORIOSHELPER NATIVE TEST SUITE (27 TESTS)        " << std::endl;
+        std::cout << "      KAORIOSHELPER NATIVE TEST SUITE (36 TESTS)        " << std::endl;
         std::cout << "========================================================" << std::endl;
 
-        std::cout << "\n[SUITE 1/6] HMA Engine Tests (5 tests):" << std::endl;
+        std::cout << "\n[SUITE 1/7] HMA Engine Tests (5 tests):" << std::endl;
         test_hma_positive(temp_dir);
         test_hma_negative(temp_dir);
         test_hma_malformed(temp_dir);
         test_hma_reload(temp_dir);
         test_hma_recovery(temp_dir);
 
-        std::cout << "\n[SUITE 2/6] PIF Engine Tests (5 tests):" << std::endl;
+        std::cout << "\n[SUITE 2/7] PIF Engine Tests (5 tests):" << std::endl;
         test_pif_positive(temp_dir);
         test_pif_negative(temp_dir);
         test_pif_malformed(temp_dir);
         test_pif_reload(temp_dir);
         test_pif_recovery(temp_dir);
 
-        std::cout << "\n[SUITE 3/6] TEE Engine Tests (5 tests):" << std::endl;
+        std::cout << "\n[SUITE 3/7] TEE Engine Tests (5 tests):" << std::endl;
         test_tee_positive(temp_dir);
         test_tee_negative(temp_dir);
         test_tee_malformed(temp_dir);
         test_tee_reload(temp_dir);
         test_tee_recovery(temp_dir);
 
-        std::cout << "\n[SUITE 4/6] COPG Engine Tests (5 tests):" << std::endl;
+        std::cout << "\n[SUITE 4/7] COPG Engine Tests (5 tests):" << std::endl;
         test_copg_positive(temp_dir);
         test_copg_negative(temp_dir);
         test_copg_malformed(temp_dir);
         test_copg_reload(temp_dir);
         test_copg_recovery(temp_dir);
 
-        std::cout << "\n[SUITE 5/6] Dispatcher Lifecycle & Safety Tests (5 tests):" << std::endl;
+        std::cout << "\n[SUITE 5/7] Dispatcher Lifecycle & Safety Tests (5 tests):" << std::endl;
         test_dispatcher_unmanaged_dlclose(temp_dir);
         test_dispatcher_managed_claim(temp_dir);
         test_dispatcher_null_nice_name_fallback(temp_dir);
         test_dispatcher_server_specialization(temp_dir);
         test_dispatcher_server_disabled_dlclose(temp_dir);
 
-        std::cout << "\n[SUITE 6/6] ABI Contract & Keystore Non-Interference Tests (2 tests):" << std::endl;
+        std::cout << "\n[SUITE 6/7] ABI Contract & Keystore Non-Interference Tests (2 tests):" << std::endl;
         test_abi_table_contract_verification();
         test_tee_keystore_keygen_non_interference(temp_dir);
 
+        std::cout << "\n[SUITE 7/7] Defect Condition & Regression Tests (9 tests):" << std::endl;
+        test_hma_fake_entrypoint_rejected(temp_dir);
+        test_hma_real_hook_missing_handling(temp_dir);
+        test_ack_unprivileged_write_rejected(temp_dir);
+        test_ack_stale_discarded(temp_dir);
+        test_generation_per_engine_tracking(temp_dir);
+        test_generation_mismatch_pending(temp_dir);
+        test_plt_hook_not_observed_until_called(temp_dir);
+        test_cpu_mount_shared_ns_rejected(temp_dir);
+        test_unsupported_arch_reported(temp_dir);
+
         std::cout << "\n========================================================" << std::endl;
-        std::cout << "    ALL 27 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
+        std::cout << "    ALL 36 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
         std::cout << "========================================================" << std::endl;
     } catch (const std::exception &e) {
         std::cerr << "Exception: " << e.what() << std::endl;

@@ -13,6 +13,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-unused-parameter -fvi
 
 # Include directories
 include_directories(
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/zygisk
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jni
     ${CMAKE_CURRENT_SOURCE_DIR}/zygisk/include

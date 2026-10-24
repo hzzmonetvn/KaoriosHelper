@@ -15,6 +15,12 @@
 #include <cstdlib>
 #include <algorithm>
 
+#if __has_include(<ack_protocol.hpp>)
+#include <ack_protocol.hpp>
+#elif __has_include("../../include/ack_protocol.hpp")
+#include "../../include/ack_protocol.hpp"
+#endif
+
 #if __has_include(<nlohmann/json.hpp>)
 #include <nlohmann/json.hpp>
 #elif __has_include("../../third_party/json/nlohmann/json.hpp")
@@ -36,6 +42,7 @@ static int my_copg_system_property_get(const char *name, char *value) {
     if (engine) {
         std::string override_val;
         if (engine->resolvePropertyOverride(name, override_val)) {
+            engine->recordPropertyIntercepted();
             size_t len = std::min(override_val.size(), static_cast<size_t>(PROP_VALUE_MAX - 1));
             memcpy(value, override_val.c_str(), len);
             value[len] = '\0';
@@ -334,12 +341,12 @@ void CopgEngine::onLoad(zygisk::Api *api, JNIEnv *env) {
 void CopgEngine::installPltPropertyHooks(const std::string &process_name) {
     if (!api_) return;
 
+#if defined(__ANDROID__)
     size_t libraries_discovered = 0;
     size_t hooks_attempted = 0;
     size_t hooks_succeeded = 0;
     bool commit_succeeded = false;
 
-#if defined(__ANDROID__)
     // Scan /proc/self/maps to identify mapped libraries and register PLT hooks
     FILE *maps = fopen("/proc/self/maps", "r");
     if (!maps) {
@@ -389,18 +396,23 @@ void CopgEngine::installPltPropertyHooks(const std::string &process_name) {
 
     if (hooks_attempted > 0) {
         commit_succeeded = api_->pltHookCommit();
+        plt_commit_succeeded_ = commit_succeeded;
         LOGI("COPG PLT Hook Status: discovered=%zu, attempted=%zu, registered=%zu, committed=%d for %s",
              libraries_discovered, hooks_attempted, hooks_succeeded, commit_succeeded ? 1 : 0, process_name.c_str());
     } else {
+        plt_commit_succeeded_ = false;
         LOGI("COPG: Discovered %zu mapped libraries in %s, but no target native libraries eligible for PLT hooking",
              libraries_discovered, process_name.c_str());
     }
+    libraries_discovered_ = libraries_discovered;
+    hooks_attempted_ = hooks_attempted;
+    hooks_registered_ = hooks_succeeded;
 #else
     (void)process_name;
-    (void)libraries_discovered;
-    (void)hooks_attempted;
-    (void)hooks_succeeded;
-    (void)commit_succeeded;
+    libraries_discovered_ = 0;
+    hooks_attempted_ = 0;
+    hooks_registered_ = 0;
+    plt_commit_succeeded_ = false;
     LOGD("COPG: [Host Mock] PLT hook installation skipped (not Android)");
 #endif
 }
@@ -556,15 +568,101 @@ void CopgEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const 
         forgeAndroidId(env_, current_device_info_.android_id.c_str());
     }
 
-    // 3. Mount namespace isolation check
+    // 3. Mount namespace isolation check & execution
+    cpu_mount_active_ = false;
     if (current_flags_.needs_cpu_mount) {
-        LOGW("COPG: CPU mount requested for %s, but target namespace isolation cannot be established. Feature disabled by default to protect shared Zygote namespace.", process_name.c_str());
+        bool ns_isolated = false;
+        struct stat self_st{}, root_st{};
+        if (stat("/proc/self/ns/mnt", &self_st) == 0 && stat("/proc/1/ns/mnt", &root_st) == 0) {
+            if (self_st.st_ino != root_st.st_ino) {
+                ns_isolated = true;
+            }
+        }
+
+        if (ns_isolated) {
+            std::string spoof_source = data_dir_ + "/cpuinfo_spoof";
+            if (access(spoof_source.c_str(), F_OK) != 0) {
+                spoof_source = "/data/adb/modules/COPG/cpuinfo_spoof";
+            }
+
+            if (access(spoof_source.c_str(), F_OK) == 0) {
+                if (api_) {
+                    int sock = api_->connectCompanion();
+                    if (sock >= 0) {
+                        std::string cmd = "mount_cpu:" + std::to_string(getpid()) + ":" + spoof_source;
+                        write(sock, cmd.data(), cmd.size());
+                        int resp = -1;
+                        read(sock, &resp, sizeof(resp));
+                        close(sock);
+                    }
+                }
+
+                // Verify mount succeeded via /proc/self/mountinfo
+                FILE *mi = fopen("/proc/self/mountinfo", "r");
+                if (mi) {
+                    char line[512];
+                    while (fgets(line, sizeof(line), mi)) {
+                        if (strstr(line, "/proc/cpuinfo") != nullptr) {
+                            cpu_mount_active_ = true;
+                            break;
+                        }
+                    }
+                    fclose(mi);
+                }
+
+                if (cpu_mount_active_) {
+                    LOGI("COPG: Target-private CPU mount confirmed active for %s", process_name.c_str());
+                } else {
+                    LOGW("COPG: CPU mount requested and submitted for %s, but /proc/cpuinfo mount not observed in mountinfo", process_name.c_str());
+                }
+            } else {
+                LOGW("COPG: CPU mount requested for %s, but cpuinfo_spoof file missing at %s", process_name.c_str(), spoof_source.c_str());
+            }
+        } else {
+            LOGW("COPG: CPU mount requested for %s, but target namespace is not isolated (shares inode with PID 1: %lu). Aborting mount to protect system namespace.",
+                 process_name.c_str(), (unsigned long)self_st.st_ino);
+        }
     }
 
-    // Write runtime acknowledgement for helperctl
-    std::string ack_path = data_dir_ + "/runtime/copg.ack";
-    int ack_fd = open(ack_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
-    if (ack_fd >= 0) close(ack_fd);
+    // Versioned Runtime Acknowledgement protocol
+    RuntimeAck ack;
+    ack.engine = "copg";
+    ack.processName = process_name;
+    ack.pid = getpid();
+    ack.uid = getuid();
+    ack.configGeneration = applied_generation_;
+
+    if (getInterceptedCount() > 0) {
+        ack.eventType = AckEventType::HOOK_OBSERVED;
+        ack.initResult = 0;
+        ack.detail = "COPG PLT property queries intercepted and spoofed (" + std::to_string(getInterceptedCount()) + " calls)";
+    } else if (plt_commit_succeeded_ || current_flags_.needs_device_spoof || cpu_mount_active_) {
+        ack.eventType = AckEventType::HOOK_INITIALIZED;
+        ack.initResult = 0;
+        ack.detail = "COPG hooks initialized (discovered=" + std::to_string(libraries_discovered_) +
+                     ", registered=" + std::to_string(hooks_registered_) +
+                     ", committed=" + (plt_commit_succeeded_ ? "1" : "0") +
+                     ", cpu_mount=" + (cpu_mount_active_ ? "1" : "0") + ")";
+    } else {
+        ack.eventType = AckEventType::PROCESS_LOADED;
+        ack.initResult = 0;
+        ack.detail = "COPG targeted process loaded";
+    }
+
+    if (api_) {
+        int sock = api_->connectCompanion();
+        if (sock >= 0) {
+            std::string msg = "ack:" + ack.toJson().dump();
+            write(sock, msg.data(), msg.size());
+            int resp = -1;
+            read(sock, &resp, sizeof(resp));
+            close(sock);
+        } else if (geteuid() == 0) {
+            writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+        }
+    } else if (geteuid() == 0) {
+        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+    }
 
     // If stealth mode is requested and no persistent native hooks remain, unload
     if (!current_flags_.needs_plt_hook && api_) {

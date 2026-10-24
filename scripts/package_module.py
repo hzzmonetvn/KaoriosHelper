@@ -18,8 +18,8 @@ MODULE_DIR = ROOT_DIR / "module"
 OUT_DIR = ROOT_DIR / "out"
 
 
-def get_module_version() -> str:
-    prop_file = MODULE_DIR / "module.prop"
+def get_module_version(module_dir: Path = MODULE_DIR) -> str:
+    prop_file = module_dir / "module.prop"
     if not prop_file.is_file():
         raise FileNotFoundError(f"Missing {prop_file}")
 
@@ -29,10 +29,14 @@ def get_module_version() -> str:
     return "v1.0.0"
 
 
-def build_zip() -> Path:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    version = get_module_version()
-    zip_path = OUT_DIR / f"kaorioshelper-{version}.zip"
+def build_zip(
+    module_dir: Path = MODULE_DIR,
+    out_dir: Path = OUT_DIR,
+    require_binaries: bool = True,
+) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    version = get_module_version(module_dir)
+    zip_path = out_dir / f"kaorioshelper-{version}.zip"
 
     # Files to include in the package
     required_files = [
@@ -43,22 +47,36 @@ def build_zip() -> Path:
         "action.sh",
         "uninstall.sh",
         "helperctl.sh",
-        "helperctl",
-        "zygisk/arm64-v8a.so",
         "META-INF/com/google/android/update-binary",
         "META-INF/com/google/android/updater-script",
     ]
 
+    binary_files = [
+        "helperctl",
+        "zygisk/arm64-v8a.so",
+        "zygisk/x86_64.so",
+        "zygisk/armeabi-v7a.so",
+        "zygisk/x86.so",
+    ]
+
     for rel_path in required_files:
-        src = MODULE_DIR / rel_path
+        src = module_dir / rel_path
         if not src.is_file():
-            raise FileNotFoundError(f"Required package file missing: {src}. Run scripts/build_android.sh first.")
+            raise FileNotFoundError(f"Required package file missing: {src}")
+
+    if require_binaries:
+        for rel_path in binary_files:
+            src = module_dir / rel_path
+            if not src.is_file():
+                raise FileNotFoundError(
+                    f"Required cross-compiled binary missing: {src}. Run scripts/build_android.sh first."
+                )
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(MODULE_DIR):
+        for root, dirs, files in os.walk(module_dir):
             for file in files:
                 file_path = Path(root) / file
-                rel_path = file_path.relative_to(MODULE_DIR)
+                rel_path = file_path.relative_to(module_dir)
 
                 # Skip transient/temporary files or logs
                 if file.startswith(".tmp") or file.endswith(".tmp") or ".old" in file:
@@ -67,7 +85,13 @@ def build_zip() -> Path:
                 # Add to ZIP preserving UNIX file attributes
                 zinfo = zipfile.ZipInfo(str(rel_path))
                 # Set permissions: 0755 for scripts/binaries, 0644 for others
-                if file.endswith(".sh") or "update-binary" in file or file.endswith(".so") or file == "helperctl" or "bin/" in str(rel_path):
+                if (
+                    file.endswith(".sh")
+                    or "update-binary" in file
+                    or file.endswith(".so")
+                    or file == "helperctl"
+                    or "bin/" in str(rel_path)
+                ):
                     zinfo.external_attr = 0o755 << 16
                 else:
                     zinfo.external_attr = 0o644 << 16

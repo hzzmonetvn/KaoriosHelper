@@ -17,6 +17,15 @@ mkdir -p "${CLASSES_DIR}" "${DEX_DIR}"
 # Locate javac
 JAVAC_BIN="$(command -v javac || true)"
 if [ -z "${JAVAC_BIN}" ]; then
+  for cand in /home/hzzmonet/.gradle/jdks/*/bin/javac /usr/lib/jvm/*/bin/javac; do
+    if [ -x "${cand}" ]; then
+      JAVAC_BIN="${cand}"
+      break
+    fi
+  done
+fi
+
+if [ -z "${JAVAC_BIN}" ]; then
   echo "Error: javac not found. A full JDK is required to build HMA DEX." >&2
   exit 1
 fi
@@ -28,6 +37,14 @@ if [ -z "${D8_BIN}" ] && [ -n "${ANDROID_HOME:-}" ]; then
 fi
 if [ -z "${D8_BIN}" ] && [ -n "${ANDROID_SDK_ROOT:-}" ]; then
   D8_BIN="$(find "${ANDROID_SDK_ROOT}/build-tools" -name d8 -type f 2>/dev/null | sort -V | tail -n 1 || true)"
+fi
+if [ -z "${D8_BIN}" ]; then
+  for cand in /home/hzzmonet/.cache/kaorios-sdk-tools-*/unpacked/cmdline-tools/bin/d8 /tmp/kaorios-android-sdk-download/unpacked/cmdline-tools/bin/d8; do
+    if [ -x "${cand}" ]; then
+      D8_BIN="${cand}"
+      break
+    fi
+  done
 fi
 
 if [ -z "${D8_BIN}" ]; then
