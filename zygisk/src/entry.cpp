@@ -225,12 +225,53 @@ static void companion_handler(int client_socket) {
                 // Securely override PID & UID with peer credentials from kernel
                 ack.pid = target_pid;
                 ack.uid = cr.uid;
-                std::string runtime_dir = "/data/adb/modules/kaorioshelper/data/runtime";
-                if (writeRuntimeAckDirect(runtime_dir, ack)) {
-                    LOGI("KaoriosHelper companion: committed runtime ack for %s (%s)", ack.engine.c_str(), ack.processName.c_str());
-                    result = 0;
+
+                // Authenticate process name from /proc/<pid>/cmdline
+                char cmdline_path[64];
+                snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", target_pid);
+                int cmd_fd = open(cmdline_path, O_RDONLY | O_CLOEXEC);
+                if (cmd_fd >= 0) {
+                    char cmd_buf[256] = {0};
+                    ssize_t n = read(cmd_fd, cmd_buf, sizeof(cmd_buf) - 1);
+                    close(cmd_fd);
+                    if (n > 0) {
+                        cmd_buf[n] = '\0';
+                        ack.processName = std::string(cmd_buf);
+                    }
+                }
+
+                if (ack.timestamp == 0) {
+                    struct timespec ts{};
+                    clock_gettime(CLOCK_REALTIME, &ts);
+                    ack.timestamp = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+                }
+
+                std::string reason;
+                if (!validateRuntimeAck(ack, reason)) {
+                    LOGW("KaoriosHelper companion: rejected unauthorized runtime ack from pid=%d uid=%d (%s): %s",
+                         target_pid, cr.uid, ack.processName.c_str(), reason.c_str());
+                    result = -1;
                 } else {
-                    LOGW("KaoriosHelper companion: writeRuntimeAckDirect failed for %s", ack.engine.c_str());
+                    std::string runtime_dir = "/data/adb/modules/kaorioshelper/data/runtime";
+                    RuntimeAck prev_ack;
+                    if (readRuntimeAck(runtime_dir, ack.engine, prev_ack)) {
+                        if (ack.configGeneration < prev_ack.configGeneration && ack.configGeneration != 0) {
+                            LOGW("KaoriosHelper companion: rejected stale ack (gen %lu < prev gen %lu) for %s",
+                                 (unsigned long)ack.configGeneration, (unsigned long)prev_ack.configGeneration, ack.engine.c_str());
+                            result = -2;
+                            write(client_socket, &result, sizeof(result));
+                            close(client_socket);
+                            return;
+                        }
+                    }
+
+                    if (writeRuntimeAckDirect(runtime_dir, ack)) {
+                        LOGI("KaoriosHelper companion: authenticated and committed runtime ack for %s (%s, pid=%d, uid=%d, gen=%lu)",
+                             ack.engine.c_str(), ack.processName.c_str(), ack.pid, ack.uid, (unsigned long)ack.configGeneration);
+                        result = 0;
+                    } else {
+                        LOGW("KaoriosHelper companion: writeRuntimeAckDirect failed for %s", ack.engine.c_str());
+                    }
                 }
             }
         }

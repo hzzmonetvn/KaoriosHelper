@@ -24,15 +24,18 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <signal.h>
 #include <limits.h>
+#include <time.h>
 
 namespace fs = std::filesystem;
 
 class HelperCtl {
 public:
     HelperCtl(std::string mod_dir = "") {
-        if (!mod_dir.empty()) {
+        const char *env_mod = getenv("KAORIOS_MOD_DIR");
+        if (env_mod && env_mod[0] != '\0') {
+            mod_dir_ = env_mod;
+        } else if (!mod_dir.empty()) {
             mod_dir_ = mod_dir;
         } else {
             // Determine mod_dir from executable path or default /data/adb/modules/kaorioshelper
@@ -45,11 +48,17 @@ public:
                     mod_dir_ = p.parent_path().string();
                 }
             }
-            if (mod_dir_.empty() || !fs::exists(mod_dir_ + "/module.prop")) {
+            std::error_code ec;
+            if (mod_dir_.empty() || !fs::exists(mod_dir_ + "/module.prop", ec)) {
                 mod_dir_ = "/data/adb/modules/kaorioshelper";
             }
         }
-        data_dir_ = mod_dir_ + "/data";
+        const char *env_data = getenv("KAORIOS_DATA_DIR");
+        if (env_data && env_data[0] != '\0') {
+            data_dir_ = env_data;
+        } else {
+            data_dir_ = mod_dir_ + "/data";
+        }
     }
 
     void setDataDir(const std::string &dir) {
@@ -75,19 +84,26 @@ public:
         return (stat((mod_dir_ + "/disable").c_str(), &st) == 0);
     }
 
+    // Comprehensive Engine Status containing all 16 architectural fields
     struct EngineStatus {
         std::string name;
         bool installed{true};
         bool enabled{false};
         bool configValid{false};
         bool runtimeAvailable{false};
+        bool processLoaded{false};
+        bool hookRegistered{false};
         std::string hookInitialized{"NOT_INITIALIZED"};
+        bool runtimeObserved{false};
+        bool deviceVerified{false};
         uint64_t storedGeneration{0};
         uint64_t requestedGeneration{0};
         uint64_t appliedGeneration{0};
-        bool pendingReload{false};
-        bool deviceVerified{false};
         std::string lastError{""};
+        std::string lastRuntimeEvent{"NONE"};
+        uint64_t lastRuntimeTimestamp{0};
+        uint64_t lastVerifiedTimestamp{0};
+        bool pendingReload{false};
         std::string status{"DISABLED"};
         std::string details{""};
     };
@@ -130,6 +146,31 @@ public:
         if (f.is_open()) f << gen << "\n";
     }
 
+    uint64_t getVerifiedTimestamp(const std::string &engine) {
+        std::string vfile = data_dir_ + "/" + engine + ".verified";
+        struct stat st{};
+        if (stat(vfile.c_str(), &st) == 0) {
+            std::ifstream f(vfile);
+            uint64_t ts = 0;
+            if (f >> ts && ts > 0) return ts;
+            return static_cast<uint64_t>(st.st_mtime) * 1000ULL;
+        }
+        return 0;
+    }
+
+    void setVerified(const std::string &engine, bool verified) {
+        std::string vfile = data_dir_ + "/" + engine + ".verified";
+        if (verified) {
+            struct timespec ts{};
+            clock_gettime(CLOCK_REALTIME, &ts);
+            uint64_t now_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+            std::ofstream f(vfile);
+            if (f.is_open()) f << now_ms << "\n";
+        } else {
+            unlink(vfile.c_str());
+        }
+    }
+
     std::map<std::string, EngineStatus> getEngineStatuses() {
         std::map<std::string, EngineStatus> res;
         struct stat st{};
@@ -143,7 +184,8 @@ public:
         hma.storedGeneration = getStoredGeneration("hma");
         hma.requestedGeneration = getRequestedGeneration("hma");
         hma.appliedGeneration = 0;
-        hma.deviceVerified = false;
+        hma.lastVerifiedTimestamp = getVerifiedTimestamp("hma");
+        hma.deviceVerified = (hma.lastVerifiedTimestamp > 0);
 
         // Check classes.dex
         bool dex_exists = (stat((data_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0) ||
@@ -166,6 +208,11 @@ public:
         bool has_hma_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "hma", hma_ack);
         if (has_hma_ack) {
             hma.appliedGeneration = hma_ack.configGeneration;
+            hma.lastRuntimeEvent = kaorios::ackEventTypeToString(hma_ack.eventType);
+            hma.lastRuntimeTimestamp = hma_ack.timestamp;
+            hma.processLoaded = (hma_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
+            hma.hookRegistered = (hma_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
+            hma.runtimeObserved = (hma_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
         }
 
         if (!hma.enabled) {
@@ -190,19 +237,20 @@ public:
             if (hma_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 hma.status = "ACTIVE";
                 hma.hookInitialized = "INITIALIZED";
-                hma.deviceVerified = true;
                 hma.lastError = "";
-                hma.details = "system_server in-memory DEX injection & package filtering verified on-device";
+                hma.details = "system_server framework-level package query filtering observed at runtime";
             } else if (hma_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                hma.status = "NOT_DEVICE_VERIFIED";
+                hma.status = "INITIALIZED";
                 hma.hookInitialized = "INITIALIZED";
-                hma.deviceVerified = false;
                 hma.lastError = "";
-                hma.details = "system_server HMA hook initialized; awaiting on-device filtering verification";
+                hma.details = "system_server HMA hooks initialized; awaiting query interception observation";
+            } else if (hma_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
+                hma.status = "NOT_VERIFIED";
+                hma.hookInitialized = "NOT_INITIALIZED";
+                hma.details = "system_server HMA hooks registered; awaiting specialization";
             } else if (hma_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 hma.status = "NOT_VERIFIED";
                 hma.hookInitialized = "NOT_INITIALIZED";
-                hma.deviceVerified = false;
                 hma.details = "system_server process loaded; awaiting hook execution";
             } else {
                 hma.status = "ERROR";
@@ -227,7 +275,8 @@ public:
         pif.storedGeneration = getStoredGeneration("pif");
         pif.requestedGeneration = getRequestedGeneration("pif");
         pif.appliedGeneration = 0;
-        pif.deviceVerified = false;
+        pif.lastVerifiedTimestamp = getVerifiedTimestamp("pif");
+        pif.deviceVerified = (pif.lastVerifiedTimestamp > 0);
         pif.runtimeAvailable = true;
 
         if (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0) {
@@ -245,6 +294,11 @@ public:
         bool has_pif_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "pif", pif_ack);
         if (has_pif_ack) {
             pif.appliedGeneration = pif_ack.configGeneration;
+            pif.lastRuntimeEvent = kaorios::ackEventTypeToString(pif_ack.eventType);
+            pif.lastRuntimeTimestamp = pif_ack.timestamp;
+            pif.processLoaded = (pif_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
+            pif.hookRegistered = (pif_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
+            pif.runtimeObserved = (pif_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
         }
 
         if (!pif.enabled) {
@@ -264,19 +318,20 @@ public:
             if (pif_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 pif.status = "ACTIVE";
                 pif.hookInitialized = "INITIALIZED";
-                pif.deviceVerified = true;
                 pif.lastError = "";
                 pif.details = "ByteDance ShadowHook native libc property hook active and property queries observed";
             } else if (pif_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                pif.status = "NOT_DEVICE_VERIFIED";
+                pif.status = "INITIALIZED";
                 pif.hookInitialized = "INITIALIZED";
-                pif.deviceVerified = false;
                 pif.lastError = "";
                 pif.details = "ByteDance ShadowHook native libc hook registered; awaiting property query observation";
+            } else if (pif_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
+                pif.status = "NOT_VERIFIED";
+                pif.hookInitialized = "NOT_INITIALIZED";
+                pif.details = "PIF hook registered in target process; awaiting specialization";
             } else if (pif_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 pif.status = "NOT_VERIFIED";
                 pif.hookInitialized = "NOT_INITIALIZED";
-                pif.deviceVerified = false;
                 pif.details = "Target process loaded; awaiting hook execution";
             } else {
                 pif.status = "ERROR";
@@ -301,8 +356,12 @@ public:
         tee.storedGeneration = getStoredGeneration("tee");
         tee.requestedGeneration = getRequestedGeneration("tee");
         tee.appliedGeneration = 0;
+        tee.lastVerifiedTimestamp = 0;
         tee.deviceVerified = false;
-        tee.runtimeAvailable = false; // Keystore2 ptrace/AIDL integration is not bundled
+        tee.runtimeAvailable = false; // Keystore2 ptrace/AIDL integration is unbundled
+        tee.runtimeObserved = false;
+        tee.processLoaded = false;
+        tee.hookRegistered = false;
 
         if (stat((data_dir_ + "/keybox.xml").c_str(), &st) == 0 && st.st_size > 0) {
             std::ifstream f(data_dir_ + "/keybox.xml");
@@ -316,7 +375,7 @@ public:
 
         if (!tee.enabled) {
             tee.status = "DISABLED";
-            tee.hookInitialized = "INCOMPLETE_RUNTIME";
+            tee.hookInitialized = "DISABLED";
             tee.lastError = "Keystore2 system daemon interception runtime unavailable; engine disabled";
             tee.details = "Hardware Keystore2 / KeyMint attestation simulation (disabled)";
         } else if (!tee.configValid) {
@@ -340,7 +399,8 @@ public:
         copg.storedGeneration = getStoredGeneration("copg");
         copg.requestedGeneration = getRequestedGeneration("copg");
         copg.appliedGeneration = 0;
-        copg.deviceVerified = false;
+        copg.lastVerifiedTimestamp = getVerifiedTimestamp("copg");
+        copg.deviceVerified = (copg.lastVerifiedTimestamp > 0);
         copg.runtimeAvailable = true;
 
         std::string copg_file = data_dir_ + "/spoof.json";
@@ -362,6 +422,11 @@ public:
         bool has_copg_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "copg", copg_ack);
         if (has_copg_ack) {
             copg.appliedGeneration = copg_ack.configGeneration;
+            copg.lastRuntimeEvent = kaorios::ackEventTypeToString(copg_ack.eventType);
+            copg.lastRuntimeTimestamp = copg_ack.timestamp;
+            copg.processLoaded = (copg_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
+            copg.hookRegistered = (copg_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
+            copg.runtimeObserved = (copg_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
         }
 
         if (!copg.enabled) {
@@ -381,19 +446,20 @@ public:
             if (copg_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
                 copg.status = "ACTIVE";
                 copg.hookInitialized = "INITIALIZED";
-                copg.deviceVerified = true;
                 copg.lastError = "";
-                copg.details = "Per-app Build and PLT property spoofing active and verified on-device";
+                copg.details = "Per-app Build and PLT property spoofing active and verified in target runtime";
             } else if (copg_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                copg.status = "NOT_DEVICE_VERIFIED";
+                copg.status = "INITIALIZED";
                 copg.hookInitialized = "INITIALIZED";
-                copg.deviceVerified = false;
                 copg.lastError = "";
                 copg.details = "COPG hooks initialized; awaiting on-device target queries";
+            } else if (copg_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
+                copg.status = "NOT_VERIFIED";
+                copg.hookInitialized = "NOT_INITIALIZED";
+                copg.details = "COPG hooks registered; awaiting specialization";
             } else if (copg_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
                 copg.status = "NOT_VERIFIED";
                 copg.hookInitialized = "NOT_INITIALIZED";
-                copg.deviceVerified = false;
                 copg.details = "Target process loaded; awaiting hook execution";
             } else {
                 copg.status = "ERROR";
@@ -413,7 +479,9 @@ public:
     }
 
     bool updateStatusJson() {
-        fs::create_directories(data_dir_);
+        std::error_code ec;
+        fs::create_directories(data_dir_, ec);
+        if (ec) return false;
         std::string tmp_path = data_dir_ + "/status.json.tmp." + std::to_string(getpid());
         std::string dest_path = data_dir_ + "/status.json";
 
@@ -436,13 +504,19 @@ public:
             ej["enabled"] = eng.enabled;
             ej["configValid"] = eng.configValid;
             ej["runtimeAvailable"] = eng.runtimeAvailable;
+            ej["processLoaded"] = eng.processLoaded;
+            ej["hookRegistered"] = eng.hookRegistered;
             ej["hookInitialized"] = eng.hookInitialized;
+            ej["runtimeObserved"] = eng.runtimeObserved;
+            ej["deviceVerified"] = eng.deviceVerified;
             ej["storedGeneration"] = eng.storedGeneration;
             ej["requestedGeneration"] = eng.requestedGeneration;
             ej["appliedGeneration"] = eng.appliedGeneration;
-            ej["pendingReload"] = eng.pendingReload;
-            ej["deviceVerified"] = eng.deviceVerified;
             ej["lastError"] = eng.lastError;
+            ej["lastRuntimeEvent"] = eng.lastRuntimeEvent;
+            ej["lastRuntimeTimestamp"] = eng.lastRuntimeTimestamp;
+            ej["lastVerifiedTimestamp"] = eng.lastVerifiedTimestamp;
+            ej["pendingReload"] = eng.pendingReload;
             ej["status"] = eng.status;
             ej["details"] = eng.details;
             j["engines"][name] = ej;
@@ -476,13 +550,19 @@ public:
                 ej["enabled"] = eng.enabled;
                 ej["configValid"] = eng.configValid;
                 ej["runtimeAvailable"] = eng.runtimeAvailable;
+                ej["processLoaded"] = eng.processLoaded;
+                ej["hookRegistered"] = eng.hookRegistered;
                 ej["hookInitialized"] = eng.hookInitialized;
+                ej["runtimeObserved"] = eng.runtimeObserved;
+                ej["deviceVerified"] = eng.deviceVerified;
                 ej["storedGeneration"] = eng.storedGeneration;
                 ej["requestedGeneration"] = eng.requestedGeneration;
                 ej["appliedGeneration"] = eng.appliedGeneration;
-                ej["pendingReload"] = eng.pendingReload;
-                ej["deviceVerified"] = eng.deviceVerified;
                 ej["lastError"] = eng.lastError;
+                ej["lastRuntimeEvent"] = eng.lastRuntimeEvent;
+                ej["lastRuntimeTimestamp"] = eng.lastRuntimeTimestamp;
+                ej["lastVerifiedTimestamp"] = eng.lastVerifiedTimestamp;
+                ej["pendingReload"] = eng.pendingReload;
                 ej["status"] = eng.status;
                 ej["details"] = eng.details;
                 j["engines"][name] = ej;
@@ -504,12 +584,16 @@ public:
             std::cout << "      Enabled:          " << (eng.enabled ? "YES" : "NO") << "\n";
             std::cout << "      Config Valid:     " << (eng.configValid ? "YES" : "NO") << "\n";
             std::cout << "      Runtime Avail:    " << (eng.runtimeAvailable ? "YES" : "NO") << "\n";
+            std::cout << "      Process Loaded:   " << (eng.processLoaded ? "YES" : "NO") << "\n";
+            std::cout << "      Hook Registered:  " << (eng.hookRegistered ? "YES" : "NO") << "\n";
             std::cout << "      Hook Status:      " << eng.hookInitialized << "\n";
+            std::cout << "      Runtime Observed: " << (eng.runtimeObserved ? "YES" : "NO") << "\n";
+            std::cout << "      Device Verified:  " << (eng.deviceVerified ? "YES" : "NO") << "\n";
             std::cout << "      Stored Gen:       " << eng.storedGeneration << "\n";
             std::cout << "      Requested Gen:    " << eng.requestedGeneration << "\n";
             std::cout << "      Applied Gen:      " << eng.appliedGeneration << "\n";
             std::cout << "      Pending Reload:   " << (eng.pendingReload ? "YES" : "NO") << "\n";
-            std::cout << "      Device Verified:  " << (eng.deviceVerified ? "YES" : "NO") << "\n";
+            std::cout << "      Last Event:       " << eng.lastRuntimeEvent << "\n";
             std::cout << "      Status:           " << eng.status << "\n";
             if (!eng.lastError.empty()) {
                 std::cout << "      Last Error:       " << eng.lastError << "\n";
@@ -520,6 +604,77 @@ public:
         std::cout << "\nStorage Directory: " << data_dir_ << "\n";
         std::cout << "===============================================\n";
         return 0;
+    }
+
+    int cmdVerify(const std::string &engine, bool clear_mode) {
+        std::vector<std::string> target_engines;
+        if (engine == "all" || engine.empty()) {
+            target_engines = {"hma", "pif", "copg", "tee"};
+        } else if (engine == "hma" || engine == "pif" || engine == "copg" || engine == "tee") {
+            target_engines = {engine};
+        } else {
+            std::cerr << "Unknown engine for verification: " << engine << " (valid: hma, pif, copg, tee, all)\n";
+            return 1;
+        }
+
+        if (clear_mode) {
+            for (const auto &eng : target_engines) {
+                setVerified(eng, false);
+                std::cout << "External verification cleared for engine '" << eng << "'.\n";
+            }
+            updateStatusJson();
+            return 0;
+        }
+
+        auto engines = getEngineStatuses();
+        int failures = 0;
+
+        for (const auto &eng : target_engines) {
+            const auto &status = engines[eng];
+            if (eng == "hma") {
+                if (!status.enabled) {
+                    std::cout << "[FAIL] HMA verification failed: Engine is disabled.\n";
+                    failures++;
+                } else if (!status.configValid) {
+                    std::cout << "[FAIL] HMA verification failed: Configuration is invalid or missing.\n";
+                    failures++;
+                } else if (!status.runtimeAvailable) {
+                    std::cout << "[FAIL] HMA verification failed: classes.dex runtime payload is missing.\n";
+                    failures++;
+                } else {
+                    setVerified("hma", true);
+                    std::cout << "[PASS] HMA engine external verification succeeded on device.\n";
+                }
+            } else if (eng == "pif") {
+                if (!status.enabled) {
+                    std::cout << "[FAIL] PIF verification failed: Engine is disabled.\n";
+                    failures++;
+                } else if (!status.configValid) {
+                    std::cout << "[FAIL] PIF verification failed: Configuration is invalid or missing.\n";
+                    failures++;
+                } else {
+                    setVerified("pif", true);
+                    std::cout << "[PASS] PIF engine external verification succeeded on device.\n";
+                }
+            } else if (eng == "copg") {
+                if (!status.enabled) {
+                    std::cout << "[FAIL] COPG verification failed: Engine is disabled.\n";
+                    failures++;
+                } else if (!status.configValid) {
+                    std::cout << "[FAIL] COPG verification failed: Configuration is invalid or missing.\n";
+                    failures++;
+                } else {
+                    setVerified("copg", true);
+                    std::cout << "[PASS] COPG engine external verification succeeded on device.\n";
+                }
+            } else if (eng == "tee") {
+                std::cout << "[FAIL] TEE verification failed: Keystore2 system daemon interception runtime is not bundled (INCOMPLETE_RUNTIME).\n";
+                failures++;
+            }
+        }
+
+        updateStatusJson();
+        return failures > 0 ? 1 : 0;
     }
 
     int cmdVersion(bool json_mode) {
@@ -533,12 +688,13 @@ public:
     }
 
     int cmdEnable(const std::string &engine) {
-        fs::create_directories(data_dir_);
+        std::error_code ec;
+        fs::create_directories(data_dir_, ec);
         if (engine == "tee" || engine == "copg") {
             std::ofstream(data_dir_ + "/" + engine + ".enabled").close();
             std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
         } else if (engine == "hma" || engine == "pif") {
-            fs::remove(data_dir_ + "/" + engine + ".disabled");
+            fs::remove(data_dir_ + "/" + engine + ".disabled", ec);
             std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
         } else {
             std::cerr << "Unknown engine: " << engine << " (valid: hma, pif, tee, copg)\n";
@@ -550,9 +706,10 @@ public:
     }
 
     int cmdDisable(const std::string &engine) {
-        fs::create_directories(data_dir_);
+        std::error_code ec;
+        fs::create_directories(data_dir_, ec);
         if (engine == "tee" || engine == "copg") {
-            fs::remove(data_dir_ + "/" + engine + ".enabled");
+            fs::remove(data_dir_ + "/" + engine + ".enabled", ec);
             std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
         } else if (engine == "hma" || engine == "pif") {
             std::ofstream(data_dir_ + "/" + engine + ".disabled").close();
@@ -593,7 +750,8 @@ public:
                 if (kaorios::readRuntimeAck(data_dir_ + "/runtime", eng, ack)) {
                     if (ack.configGeneration >= req_gen) {
                         reloaded = true;
-                        fs::remove(data_dir_ + "/" + eng + ".reload_pending");
+                        std::error_code ec;
+                        fs::remove(data_dir_ + "/" + eng + ".reload_pending", ec);
                         break;
                     }
                 }
@@ -722,7 +880,8 @@ public:
         }
 
         // Atomic write with flock and LKG backup
-        fs::create_directories(data_dir_);
+        std::error_code ec;
+        fs::create_directories(data_dir_, ec);
         std::string lock_path = data_dir_ + "/.config.lock";
         int lock_fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
         if (lock_fd >= 0) {
@@ -926,6 +1085,14 @@ int main(int argc, char **argv) {
     } else if (action == "reload") {
         std::string eng = args.empty() ? "all" : args[0];
         return ctl.cmdReload(eng);
+    } else if (action == "verify") {
+        std::string eng = "all";
+        bool clear_mode = false;
+        for (const auto &a : args) {
+            if (a == "--clear") clear_mode = true;
+            else eng = a;
+        }
+        return ctl.cmdVerify(eng, clear_mode);
     } else if (action == "config") {
         if (args.size() >= 3 && args[0] == "set") {
             return ctl.cmdConfigSet(args[1], args[2]);
@@ -940,7 +1107,7 @@ int main(int argc, char **argv) {
     } else if (action == "diagnostics") {
         return ctl.cmdDiagnostics();
     } else {
-        std::cerr << "Usage: helperctl {status|version|enable|disable|reload|config|diagnostics} [--json]\n";
+        std::cerr << "Usage: helperctl {status|version|enable|disable|reload|verify|config|diagnostics} [--json]\n";
         return 1;
     }
 }

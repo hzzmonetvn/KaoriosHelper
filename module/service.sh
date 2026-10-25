@@ -52,6 +52,7 @@ resetprop_late_if_diff "sys.oem_unlock_allowed" "0"
 # ── Status Initialization ───────────────────────────────────────────────────
 if [ -x "$MODDIR/helperctl" ]; then
   "$MODDIR/helperctl" reload all >/dev/null 2>&1 || true
+  "$MODDIR/helperctl" status >/dev/null 2>&1 || true
 else
   cat > "$DATA_DIR/status.json" << EOF
 {
@@ -69,7 +70,8 @@ else
       "hookInitialized": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
       "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
       "pendingReload": $([ -f "$DATA_DIR/hma.reload_pending" ] && echo "true" || echo "false"),
-      "deviceVerified": false,
+      "runtimeObserved": $([ -f "$DATA_DIR/runtime/hma.ack" ] || [ -f "$DATA_DIR/runtime/hma.ack.json" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/hma.verified" ] && echo "true" || echo "false"),
       "lastError": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"classes.dex missing: upstream HMA DEX payload not bundled"' || echo '""'),
       "status": $([ ! -s "$DATA_DIR/classes.dex" ] && [ ! -s "$MODDIR/classes.dex" ] && echo '"INCOMPLETE_RUNTIME"' || echo '"NOT_VERIFIED"'),
       "details": "system_server in-process protection"
@@ -79,12 +81,13 @@ else
       "enabled": $([ ! -f "$DATA_DIR/pif.disabled" ] && echo "true" || echo "false"),
       "configValid": $([ -s "$DATA_DIR/pif.json" ] && echo "true" || echo "false"),
       "runtimeAvailable": true,
-      "hookInitialized": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/pif.ack" ] || [ -f "$DATA_DIR/runtime/pif.ack.json" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
       "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
       "pendingReload": $([ -f "$DATA_DIR/pif.reload_pending" ] && echo "true" || echo "false"),
-      "deviceVerified": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo "true" || echo "false"),
-      "lastError": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target process specialization"'),
-      "status": $([ -f "$DATA_DIR/runtime/pif.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "runtimeObserved": $([ -f "$DATA_DIR/runtime/pif.ack" ] || [ -f "$DATA_DIR/runtime/pif.ack.json" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/pif.verified" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/pif.ack" ] || [ -f "$DATA_DIR/runtime/pif.ack.json" ] && echo '""' || echo '"Runtime hook acknowledgement pending target process specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/pif.ack" ] || [ -f "$DATA_DIR/runtime/pif.ack.json" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
       "details": "Play Integrity property interceptor"
     },
     "tee": {
@@ -95,6 +98,7 @@ else
       "hookInitialized": "INCOMPLETE_RUNTIME",
       "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
       "pendingReload": $([ -f "$DATA_DIR/tee.reload_pending" ] && echo "true" || echo "false"),
+      "runtimeObserved": false,
       "deviceVerified": false,
       "lastError": "Keystore2 system daemon interception runtime unavailable",
       "status": "INCOMPLETE_RUNTIME",
@@ -105,12 +109,13 @@ else
       "enabled": $([ -f "$DATA_DIR/copg.enabled" ] && echo "true" || echo "false"),
       "configValid": $([ -s "$DATA_DIR/spoof.json" ] || [ -s "$DATA_DIR/COPG.json" ] && echo "true" || echo "false"),
       "runtimeAvailable": true,
-      "hookInitialized": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
+      "hookInitialized": $([ -f "$DATA_DIR/runtime/copg.ack" ] || [ -f "$DATA_DIR/runtime/copg.ack.json" ] && echo '"INITIALIZED"' || echo '"NOT_VERIFIED"'),
       "appliedGeneration": $(cat "$DATA_DIR/generation.txt" 2>/dev/null || echo "0"),
       "pendingReload": $([ -f "$DATA_DIR/copg.reload_pending" ] && echo "true" || echo "false"),
-      "deviceVerified": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo "true" || echo "false"),
-      "lastError": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '""' || echo '"Runtime hook acknowledgement pending target app specialization"'),
-      "status": $([ -f "$DATA_DIR/runtime/copg.ack" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
+      "runtimeObserved": $([ -f "$DATA_DIR/runtime/copg.ack" ] || [ -f "$DATA_DIR/runtime/copg.ack.json" ] && echo "true" || echo "false"),
+      "deviceVerified": $([ -f "$DATA_DIR/copg.verified" ] && echo "true" || echo "false"),
+      "lastError": $([ -f "$DATA_DIR/runtime/copg.ack" ] || [ -f "$DATA_DIR/runtime/copg.ack.json" ] && echo '""' || echo '"Runtime hook acknowledgement pending target app specialization"'),
+      "status": $([ -f "$DATA_DIR/runtime/copg.ack" ] || [ -f "$DATA_DIR/runtime/copg.ack.json" ] && echo '"ACTIVE"' || echo '"NOT_VERIFIED"'),
       "details": "Game profile virtualization"
     }
   },

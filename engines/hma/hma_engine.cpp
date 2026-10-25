@@ -101,6 +101,7 @@ bool HmaEngine::loadConfig() {
     }
 
     last_config_mtime_ = st.st_mtime;
+    config_json_snapshot_ = content;
     config_loaded_ = true;
     LOGI("HMA config loaded: %zu scoped callers, %zu global hidden packages", scope_map_.size(), global_hidden_packages_.size());
     return true;
@@ -361,36 +362,70 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
             config_loaded_ = loadConfig();
         }
 
-        // If DEX was injected, call its initialization hook
+        // If DEX was injected, call its initialization hook with config snapshot
         if (dex_entrypoint_ && env_) {
-            jmethodID mainMid = env_->GetStaticMethodID(dex_entrypoint_, "main", "()V");
-            if (env_->ExceptionCheck() || !mainMid) {
-                env_->ExceptionClear();
-            } else {
-                env_->CallStaticVoidMethod(dex_entrypoint_, mainMid);
+            jmethodID initMid = env_->GetStaticMethodID(dex_entrypoint_, "init", "(Ljava/lang/String;)V");
+            bool init_invoked = false;
+            if (!env_->ExceptionCheck() && initMid) {
+                jstring j_cfg = env_->NewStringUTF(config_json_snapshot_.c_str());
+                env_->CallStaticVoidMethod(dex_entrypoint_, initMid, j_cfg);
+                if (j_cfg) env_->DeleteLocalRef(j_cfg);
                 if (env_->ExceptionCheck()) {
-                    LOGE("HMA: Exception occurred during ZygoteEntry.main()");
+                    LOGE("HMA: Exception occurred during ZygoteEntry.init(snapshot)");
                     env_->ExceptionClear();
                 } else {
-                    LOGI("HMA: ZygoteEntry.main() executed inside system_server");
-
-                    int hook_state = 3; // STATE_ENTRYPOINT_EXECUTED
-                    jmethodID getStateMid = env_->GetStaticMethodID(dex_entrypoint_, "getHookState", "()I");
-                    if (!env_->ExceptionCheck() && getStateMid) {
-                        hook_state = env_->CallStaticIntMethod(dex_entrypoint_, getStateMid);
-                        if (env_->ExceptionCheck()) env_->ExceptionClear();
+                    LOGI("HMA: ZygoteEntry.init(snapshot) executed successfully in system_server");
+                    init_invoked = true;
+                }
+            } else {
+                if (env_->ExceptionCheck()) env_->ExceptionClear();
+                jmethodID mainMid = env_->GetStaticMethodID(dex_entrypoint_, "main", "()V");
+                if (!env_->ExceptionCheck() && mainMid) {
+                    env_->CallStaticVoidMethod(dex_entrypoint_, mainMid);
+                    if (env_->ExceptionCheck()) {
+                        LOGE("HMA: Exception occurred during ZygoteEntry.main()");
+                        env_->ExceptionClear();
+                    } else {
+                        LOGI("HMA: ZygoteEntry.main() executed inside system_server");
+                        init_invoked = true;
                     }
+                } else if (env_->ExceptionCheck()) {
+                    env_->ExceptionClear();
+                }
+            }
 
-                    RuntimeAck ack;
-                    ack.engine = "hma";
-                    ack.processName = "system_server";
-                    ack.pid = getpid();
-                    ack.uid = 1000;
-                    ack.configGeneration = 1;
-                    ack.initResult = (hook_state >= 3) ? 0 : -1;
-                    ack.eventType = (hook_state >= 7) ? AckEventType::HOOK_OBSERVED :
-                                    ((hook_state >= 3) ? AckEventType::HOOK_INITIALIZED : AckEventType::PROCESS_LOADED);
-                    ack.detail = "HMA DEX loaded; hook state: " + std::to_string(hook_state);
+            if (init_invoked) {
+                int hook_state = 3; // STATE_ENTRYPOINT_EXECUTED
+                jmethodID getStateMid = env_->GetStaticMethodID(dex_entrypoint_, "getHookState", "()I");
+                if (!env_->ExceptionCheck() && getStateMid) {
+                    hook_state = env_->CallStaticIntMethod(dex_entrypoint_, getStateMid);
+                    if (env_->ExceptionCheck()) env_->ExceptionClear();
+                }
+
+                RuntimeAck ack;
+                ack.engine = "hma";
+                ack.processName = "system_server";
+                ack.pid = getpid();
+                ack.uid = 1000;
+                ack.configGeneration = 1;
+                ack.initResult = (hook_state >= 5) ? 0 : -1;
+                ack.eventType = (hook_state >= 8) ? AckEventType::HOOK_OBSERVED :
+                                ((hook_state >= 5) ? AckEventType::HOOK_INITIALIZED :
+                                 ((hook_state >= 3) ? AckEventType::HOOK_REGISTERED : AckEventType::PROCESS_LOADED));
+                ack.detail = "HMA framework hooks active; hook state: " + std::to_string(hook_state);
+
+                if (api_) {
+                    int companion_sock = api_->connectCompanion();
+                    if (companion_sock >= 0) {
+                        std::string payload = "ack:" + ack.toJson().dump();
+                        write(companion_sock, payload.data(), payload.size());
+                        int resp = -1;
+                        read(companion_sock, &resp, sizeof(resp));
+                        close(companion_sock);
+                    } else {
+                        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+                    }
+                } else {
                     writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
                 }
             }

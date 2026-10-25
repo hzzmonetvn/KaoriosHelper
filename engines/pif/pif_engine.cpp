@@ -32,6 +32,10 @@ static std::atomic<uint64_t> s_properties_intercepted{0};
 #include <dlfcn.h>
 #include "shadowhook.h"
 
+#ifndef PROP_VALUE_MAX
+#define PROP_VALUE_MAX 92
+#endif
+
 typedef void (*T_Callback)(void *cookie, const char *name, const char *value, uint32_t serial);
 
 struct PropertyCallbackContext {
@@ -40,6 +44,7 @@ struct PropertyCallbackContext {
 };
 
 static void (*o_system_property_read_callback)(const prop_info *, T_Callback, void *) = nullptr;
+static int (*o_system_property_get)(const char *name, char *value) = nullptr;
 
 #endif
 
@@ -125,6 +130,7 @@ static void pif_modify_callback(void *cookie, const char *name, const char *valu
     std::string spoofed_val;
     const char *final_val = value;
     if (PifEngine::resolveSpoofedProperty(name, value, spoofed_val)) {
+        s_properties_intercepted++;
         final_val = spoofed_val.c_str();
         LOGD("PIF [ShadowHook libc] [%s]: %s -> %s", name, value, final_val);
     }
@@ -140,6 +146,23 @@ static void my_system_property_read_callback(const prop_info *pi, T_Callback cal
     // frame completely eliminates unbounded heap growth, mutex contention, and leaks.
     PropertyCallbackContext ctx{callback, cookie};
     o_system_property_read_callback(pi, pif_modify_callback, &ctx);
+}
+
+static int my_system_property_get(const char *name, char *value) {
+    if (!name || !value) return 0;
+    std::string spoofed_val;
+    if (PifEngine::resolveSpoofedProperty(name, "", spoofed_val)) {
+        s_properties_intercepted++;
+        size_t len = std::min(spoofed_val.size(), static_cast<size_t>(PROP_VALUE_MAX - 1));
+        std::memcpy(value, spoofed_val.data(), len);
+        value[len] = '\0';
+        LOGD("PIF [ShadowHook libc get] [%s] -> %s", name, value);
+        return static_cast<int>(len);
+    }
+    if (o_system_property_get) {
+        return o_system_property_get(name, value);
+    }
+    return 0;
 }
 #endif
 
@@ -158,24 +181,36 @@ void PifEngine::installPropertyHook() {
     }
 
     void *sym_addr = dlsym(RTLD_DEFAULT, "__system_property_read_callback");
-    if (!sym_addr) {
+    if (sym_addr) {
+        void *handle = shadowhook_hook_sym_addr(
+            sym_addr,
+            reinterpret_cast<void *>(my_system_property_read_callback),
+            reinterpret_cast<void **>(&o_system_property_read_callback)
+        );
+        if (handle) {
+            hook_installed_ = true;
+            LOGI("PIF: ShadowHook successfully intercepted __system_property_read_callback at %p (handle=%p)", sym_addr, handle);
+        } else {
+            LOGE("PIF: Failed to hook __system_property_read_callback. ShadowHook errno: %d", shadowhook_get_errno());
+        }
+    } else {
         LOGE("PIF: Could not resolve __system_property_read_callback via dlsym");
-        return;
     }
 
-    void *handle = shadowhook_hook_sym_addr(
-        sym_addr,
-        reinterpret_cast<void *>(my_system_property_read_callback),
-        reinterpret_cast<void **>(&o_system_property_read_callback)
-    );
-
-    if (!handle) {
-        LOGE("PIF: Failed to hook __system_property_read_callback. ShadowHook errno: %d", shadowhook_get_errno());
-        return;
+    void *sym_get = dlsym(RTLD_DEFAULT, "__system_property_get");
+    if (sym_get) {
+        void *handle_get = shadowhook_hook_sym_addr(
+            sym_get,
+            reinterpret_cast<void *>(my_system_property_get),
+            reinterpret_cast<void **>(&o_system_property_get)
+        );
+        if (handle_get) {
+            hook_installed_ = true;
+            LOGI("PIF: ShadowHook successfully intercepted __system_property_get at %p (handle=%p)", sym_get, handle_get);
+        } else {
+            LOGW("PIF: Failed to hook __system_property_get. ShadowHook errno: %d", shadowhook_get_errno());
+        }
     }
-
-    hook_installed_ = true;
-    LOGI("PIF: ShadowHook successfully intercepted __system_property_read_callback at %p (handle=%p)", sym_addr, handle);
 #endif
 #else
     hook_installed_ = true;

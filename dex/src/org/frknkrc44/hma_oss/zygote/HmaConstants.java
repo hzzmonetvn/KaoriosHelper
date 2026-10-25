@@ -23,8 +23,9 @@ public final class HmaConstants {
     public static final int STATE_ENTRYPOINT_EXECUTED = 3;
     public static final int STATE_ART_HOOK_INIT = 4;
     public static final int STATE_PMS_HOOK_INSTALLED = 5;
-    public static final int STATE_CALLER_POLICY_APPLIED = 6;
-    public static final int STATE_RESPONSE_FILTERED = 7;
+    public static final int STATE_APPSFILTER_HOOKED = 6;
+    public static final int STATE_CALLER_POLICY_APPLIED = 7;
+    public static final int STATE_RESPONSE_FILTERED = 8;
 
     public static String stateToString(int state) {
         switch (state) {
@@ -34,6 +35,7 @@ public final class HmaConstants {
             case STATE_ENTRYPOINT_EXECUTED: return "ENTRYPOINT_EXECUTED";
             case STATE_ART_HOOK_INIT: return "ART_HOOK_INIT";
             case STATE_PMS_HOOK_INSTALLED: return "PMS_HOOK_INSTALLED";
+            case STATE_APPSFILTER_HOOKED: return "APPSFILTER_HOOKED";
             case STATE_CALLER_POLICY_APPLIED: return "CALLER_POLICY_APPLIED";
             case STATE_RESPONSE_FILTERED: return "RESPONSE_FILTERED";
             default: return "UNKNOWN";

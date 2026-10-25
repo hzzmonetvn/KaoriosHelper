@@ -125,6 +125,31 @@ inline bool validateRuntimeAck(const RuntimeAck &ack, std::string &reason) {
         reason = "Invalid PID";
         return false;
     }
+
+    // Engine ownership & process authorization
+    if (ack.engine == "hma") {
+        if (ack.processName != "system_server" && ack.processName != "android") {
+            reason = "HMA engine ownership violation: process must be system_server";
+            return false;
+        }
+        if (ack.uid != 1000 && ack.uid != 0) {
+            reason = "HMA engine UID violation: UID must be 1000 or 0";
+            return false;
+        }
+    } else if (ack.engine == "pif") {
+        if (ack.processName != "com.google.android.gms" &&
+            ack.processName != "com.google.android.gms.unstable" &&
+            ack.processName != "com.android.vending") {
+            reason = "PIF engine ownership violation: process must be GMS";
+            return false;
+        }
+    } else if (ack.engine == "tee") {
+        if (ack.processName != "com.google.android.gms" &&
+            ack.processName != "com.google.android.gms.unstable") {
+            reason = "TEE engine ownership violation: process must be GMS";
+            return false;
+        }
+    }
     return true;
 }
 

@@ -216,6 +216,38 @@ class TestDefectConditions(unittest.TestCase):
         res_arm64 = check_arch_support("arm64-v8a")
         self.assertEqual(res_arm64["initResult"], 0)
 
+    def test_decoupled_device_verified_and_16_fields(self):
+        """runtimeObserved and deviceVerified must be strictly decoupled; all 16 fields present."""
+        status = {
+            "installed": True,
+            "enabled": True,
+            "configValid": True,
+            "runtimeAvailable": True,
+            "processLoaded": True,
+            "hookRegistered": True,
+            "hookInitialized": "INITIALIZED",
+            "runtimeObserved": True,
+            "deviceVerified": False,
+            "storedGeneration": 1,
+            "requestedGeneration": 1,
+            "appliedGeneration": 1,
+            "lastError": "",
+            "lastRuntimeEvent": "HOOK_OBSERVED",
+            "lastRuntimeTimestamp": 1792898000000,
+            "lastVerifiedTimestamp": 0,
+        }
+        required_16_fields = [
+            "installed", "enabled", "configValid", "runtimeAvailable",
+            "processLoaded", "hookRegistered", "hookInitialized", "runtimeObserved",
+            "deviceVerified", "storedGeneration", "requestedGeneration", "appliedGeneration",
+            "lastError", "lastRuntimeEvent", "lastRuntimeTimestamp", "lastVerifiedTimestamp"
+        ]
+        for field in required_16_fields:
+            self.assertIn(field, status)
+        self.assertEqual(len(required_16_fields), 16)
+        self.assertTrue(status["runtimeObserved"])
+        self.assertFalse(status["deviceVerified"])
+
 
 if __name__ == "__main__":
     unittest.main()

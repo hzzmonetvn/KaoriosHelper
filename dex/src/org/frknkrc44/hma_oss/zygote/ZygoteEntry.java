@@ -14,36 +14,60 @@ public class ZygoteEntry {
     private static final HmaPolicyManager sPolicyManager = new HmaPolicyManager();
     private static final ZygoteEntry sInstance = new ZygoteEntry();
 
-    public static void main() {
-        main(new String[0]);
-    }
-
-    public static void main(String[] args) {
+    /**
+     * Primary entrypoint invoked from native C++ postServerSpecialize via JNI.
+     * Receives the in-memory configuration snapshot directly, avoiding DAC 0700 denials.
+     */
+    public static void init(String configJson) {
         System.out.println(TAG + " Pinned upstream frknkrc44/HMA-OSS @" + HmaConstants.UPSTREAM_COMMIT);
-        System.out.println(TAG + " Initializing caller-aware package hiding runtime inside system_server");
+        System.out.println(TAG + " Initializing framework-level package hiding runtime in system_server");
 
         sHookState.set(HmaConstants.STATE_ENTRYPOINT_EXECUTED);
 
-        // Load configuration
-        boolean configOk = sPolicyManager.loadConfig("/data/adb/modules/kaorioshelper/data/hma.json");
-        if (!configOk) {
-            configOk = sPolicyManager.loadConfig("/data/adb/modules/kaorioshelper/config/hma.json");
+        // Apply configuration snapshot passed in-memory from root context
+        boolean configOk = false;
+        if (configJson != null && !configJson.trim().isEmpty()) {
+            configOk = sPolicyManager.applyConfigSnapshot(configJson);
         }
+
+        if (!configOk) {
+            // Fallback attempts
+            configOk = sPolicyManager.loadConfig("/data/adb/modules/kaorioshelper/data/hma.json");
+            if (!configOk) {
+                configOk = sPolicyManager.loadConfig("/data/adb/modules/kaorioshelper/config/hma.json");
+            }
+        }
+
         System.out.println(TAG + " Configuration loaded: " + configOk + " (global hidden: " + sPolicyManager.getGlobalHiddenPackages().size() + ")");
 
         // Initialize hooking layer
         sHookState.set(HmaConstants.STATE_ART_HOOK_INIT);
         boolean pmsHookOk = PackageManagerHook.install(sPolicyManager, sInstance);
         if (pmsHookOk) {
-            sHookState.set(HmaConstants.STATE_PMS_HOOK_INSTALLED);
-            System.out.println(TAG + " PackageManager hook installed successfully in system_server");
+            System.out.println(TAG + " Framework-level package hooks successfully installed; current state: " + getHookStateName());
         } else {
-            System.err.println(TAG + " PackageManager hook could not be installed in current process context");
+            System.err.println(TAG + " Framework hooks could not be installed in system_server context");
         }
     }
 
+    public static void main() {
+        main(new String[0]);
+    }
+
+    public static void main(String[] args) {
+        init(null);
+    }
+
+    public void setHookState(int state) {
+        sHookState.set(state);
+    }
+
     public void notifyCallerPolicyApplied() {
-        sHookState.compareAndSet(HmaConstants.STATE_PMS_HOOK_INSTALLED, HmaConstants.STATE_CALLER_POLICY_APPLIED);
+        // Advance to CALLER_POLICY_APPLIED (7) if at PMS_HOOK_INSTALLED or APPSFILTER_HOOKED
+        int current = sHookState.get();
+        if (current == HmaConstants.STATE_PMS_HOOK_INSTALLED || current == HmaConstants.STATE_APPSFILTER_HOOKED) {
+            sHookState.compareAndSet(current, HmaConstants.STATE_CALLER_POLICY_APPLIED);
+        }
     }
 
     public void notifyResponseFiltered() {
@@ -64,5 +88,9 @@ public class ZygoteEntry {
 
     public static boolean shouldHide(int callingUid, String targetPkg) {
         return sPolicyManager.shouldHide(callingUid, null, targetPkg);
+    }
+
+    public static HmaPolicyManager getPolicyManager() {
+        return sPolicyManager;
     }
 }

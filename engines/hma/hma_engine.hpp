@@ -58,6 +58,7 @@ private:
 
     bool loadConfig();
     bool config_loaded_ = false;
+    std::string config_json_snapshot_;
     time_t last_config_mtime_ = 0;
     mutable std::mutex config_mutex_;
 
