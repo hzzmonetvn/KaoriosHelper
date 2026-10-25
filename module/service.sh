@@ -20,6 +20,35 @@ done
 
 log "Boot completed. Initializing RuntimeManager..."
 
+# ── Late-boot Property Re-enforcement (AlwaysStrong / PIF parity) ────────────
+RESETPROP="resetprop"
+if ! command -v resetprop >/dev/null 2>&1; then
+  if [ -x "/data/adb/ksu/bin/resetprop" ]; then
+    RESETPROP="/data/adb/ksu/bin/resetprop"
+  elif [ -x "/data/adb/ap/bin/resetprop" ]; then
+    RESETPROP="/data/adb/ap/bin/resetprop"
+  elif [ -x "/data/adb/magisk/magisk" ]; then
+    RESETPROP="/data/adb/magisk/magisk resetprop"
+  fi
+fi
+
+resetprop_late_if_diff() {
+  local prop="$1"
+  local val="$2"
+  [ -z "$prop" ] || [ -z "$val" ] && return
+  local cur
+  cur="$($RESETPROP "$prop" 2>/dev/null)"
+  if [ "$cur" != "$val" ]; then
+    $RESETPROP -n "$prop" "$val" 2>/dev/null || $RESETPROP "$prop" "$val" 2>/dev/null || true
+  fi
+}
+
+resetprop_late_if_diff "ro.boot.verifiedbootstate" "green"
+resetprop_late_if_diff "ro.boot.flash.locked" "1"
+resetprop_late_if_diff "ro.boot.vbmeta.device_state" "locked"
+resetprop_late_if_diff "ro.boot.veritymode" "enforcing"
+resetprop_late_if_diff "sys.oem_unlock_allowed" "0"
+
 # ── Status Initialization ───────────────────────────────────────────────────
 if [ -x "$MODDIR/helperctl" ]; then
   "$MODDIR/helperctl" reload all >/dev/null 2>&1 || true
