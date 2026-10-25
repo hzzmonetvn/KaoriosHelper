@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 HzzMonet / Kaorios Project
-# KaoriosHelper Android NDK Cross-Compilation Pipeline (Multi-ABI: arm64, x86_64, arm, x86)
+# KaoriosHelper Android NDK Cross-Compilation Pipeline (Multi-ABI: arm64-v8a, armeabi-v7a)
 
 set -euo pipefail
 
@@ -215,90 +215,6 @@ build_arm64() {
     echo "✓ arm64-v8a build verified successfully!"
 }
 
-build_x86_64() {
-    echo "=========================================================="
-    echo "  Building KaoriosHelper for x86_64 (Android API ${API_LEVEL})"
-    echo "=========================================================="
-
-    local CC="${LLVM_BIN}/x86_64-linux-android${API_LEVEL}-clang"
-    local CXX="${LLVM_BIN}/x86_64-linux-android${API_LEVEL}-clang++"
-    local STRIP="${LLVM_BIN}/llvm-strip"
-    local READELF="${LLVM_BIN}/llvm-readelf"
-
-    local BUILD_DIR="/tmp/kaorios_build_x86_64"
-    rm -rf "${BUILD_DIR}"
-    mkdir -p "${BUILD_DIR}"
-
-    local INCLUDES=(
-        "-I${ROOT_DIR}/include"
-        "-I${ROOT_DIR}/third_party/zygisk"
-        "-I${ROOT_DIR}/third_party/json"
-        "-I${ROOT_DIR}/zygisk/include"
-        "-I${ROOT_DIR}/engines/hma"
-        "-I${ROOT_DIR}/engines/pif"
-        "-I${ROOT_DIR}/engines/tee"
-        "-I${ROOT_DIR}/engines/copg"
-        "-I${ROOT_DIR}/third_party/shadowhook/include"
-        "-I${ROOT_DIR}/third_party/shadowhook"
-        "-I${ROOT_DIR}/third_party/shadowhook/common"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/xdl"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/bsd"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/lss"
-    )
-
-    local SH_SRCS=(
-        "${ROOT_DIR}/third_party/shadowhook/arch/x86_64/shadowhook_x86_64_stub.c"
-    )
-
-    for src in "${SH_SRCS[@]}"; do
-        local obj="${BUILD_DIR}/$(basename "${src}").o"
-        "${CC}" -O3 -fPIC -fvisibility=hidden "${INCLUDES[@]}" -c "${src}" -o "${obj}"
-    done
-
-    local CORE_SRCS=(
-        "${ROOT_DIR}/zygisk/src/dispatcher.cpp"
-        "${ROOT_DIR}/engines/hma/hma_engine.cpp"
-        "${ROOT_DIR}/engines/pif/pif_engine.cpp"
-        "${ROOT_DIR}/engines/tee/tee_engine.cpp"
-        "${ROOT_DIR}/engines/copg/copg_engine.cpp"
-        "${ROOT_DIR}/zygisk/src/entry.cpp"
-    )
-
-    for src in "${CORE_SRCS[@]}"; do
-        local obj="${BUILD_DIR}/$(basename "${src}").o"
-        "${CXX}" -std=c++20 -O3 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden "${INCLUDES[@]}" -c "${src}" -o "${obj}"
-    done
-
-    local TARGET_SO="${ZYGISK_DIR}/x86_64.so"
-    echo "Linking ${TARGET_SO} (Bionic libc)..."
-    "${CXX}" -shared -O3 -static-libstdc++ \
-        -Wl,-soname,x86_64.so \
-        -Wl,-z,max-page-size=16384 \
-        -Wl,--version-script="${VERSION_SCRIPT}" \
-        -Wl,--gc-sections \
-        "${BUILD_DIR}"/*.o \
-        -llog \
-        -o "${TARGET_SO}"
-
-    "${STRIP}" --strip-unneeded "${TARGET_SO}"
-
-    # Build native helperctl CLI binary for Android x86_64
-    local TARGET_CTL="${OUT_MODULE_DIR}/bin/x86_64/helperctl"
-    mkdir -p "${OUT_MODULE_DIR}/bin/x86_64"
-    echo "Compiling native helperctl CLI for Android x86_64..."
-    "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE \
-        -I"${ROOT_DIR}/third_party/json" \
-        -I"${ROOT_DIR}/include" \
-        -Wl,-z,max-page-size=16384 \
-        "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
-        -o "${TARGET_CTL}"
-    "${STRIP}" --strip-unneeded "${TARGET_CTL}"
-    chmod 0755 "${TARGET_CTL}"
-
-    verify_shared_library "${TARGET_SO}" "Advanced Micro Devices X86-64" "x86_64.so" "${READELF}"
-    echo "✓ x86_64 build verified successfully!"
-}
-
 build_armeabi_v7a() {
     echo "=========================================================="
     echo "  Building KaoriosHelper for armeabi-v7a (Android API ${API_LEVEL})"
@@ -411,108 +327,19 @@ build_armeabi_v7a() {
     echo "✓ armeabi-v7a build verified successfully!"
 }
 
-build_x86() {
-    echo "=========================================================="
-    echo "  Building KaoriosHelper for x86 (Android API ${API_LEVEL})"
-    echo "=========================================================="
-
-    local CC="${LLVM_BIN}/i686-linux-android${API_LEVEL}-clang"
-    local CXX="${LLVM_BIN}/i686-linux-android${API_LEVEL}-clang++"
-    local STRIP="${LLVM_BIN}/llvm-strip"
-    local READELF="${LLVM_BIN}/llvm-readelf"
-
-    local BUILD_DIR="/tmp/kaorios_build_x86"
-    rm -rf "${BUILD_DIR}"
-    mkdir -p "${BUILD_DIR}"
-
-    local INCLUDES=(
-        "-I${ROOT_DIR}/include"
-        "-I${ROOT_DIR}/third_party/zygisk"
-        "-I${ROOT_DIR}/third_party/json"
-        "-I${ROOT_DIR}/zygisk/include"
-        "-I${ROOT_DIR}/engines/hma"
-        "-I${ROOT_DIR}/engines/pif"
-        "-I${ROOT_DIR}/engines/tee"
-        "-I${ROOT_DIR}/engines/copg"
-        "-I${ROOT_DIR}/third_party/shadowhook/include"
-        "-I${ROOT_DIR}/third_party/shadowhook"
-        "-I${ROOT_DIR}/third_party/shadowhook/common"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/xdl"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/bsd"
-        "-I${ROOT_DIR}/third_party/shadowhook/third_party/lss"
-    )
-
-    local SH_SRCS=(
-        "${ROOT_DIR}/third_party/shadowhook/arch/x86/shadowhook_x86_stub.c"
-    )
-
-    for src in "${SH_SRCS[@]}"; do
-        local obj="${BUILD_DIR}/$(basename "${src}").o"
-        "${CC}" -O3 -fPIC -fvisibility=hidden "${INCLUDES[@]}" -c "${src}" -o "${obj}"
-    done
-
-    local CORE_SRCS=(
-        "${ROOT_DIR}/zygisk/src/dispatcher.cpp"
-        "${ROOT_DIR}/engines/hma/hma_engine.cpp"
-        "${ROOT_DIR}/engines/pif/pif_engine.cpp"
-        "${ROOT_DIR}/engines/tee/tee_engine.cpp"
-        "${ROOT_DIR}/engines/copg/copg_engine.cpp"
-        "${ROOT_DIR}/zygisk/src/entry.cpp"
-    )
-
-    for src in "${CORE_SRCS[@]}"; do
-        local obj="${BUILD_DIR}/$(basename "${src}").o"
-        "${CXX}" -std=c++20 -O3 -fPIC -fvisibility=hidden -fvisibility-inlines-hidden "${INCLUDES[@]}" -c "${src}" -o "${obj}"
-    done
-
-    local TARGET_SO="${ZYGISK_DIR}/x86.so"
-    echo "Linking ${TARGET_SO} (Bionic libc)..."
-    "${CXX}" -shared -O3 -static-libstdc++ \
-        -Wl,-soname,x86.so \
-        -Wl,--version-script="${VERSION_SCRIPT}" \
-        -Wl,--gc-sections \
-        "${BUILD_DIR}"/*.o \
-        -llog \
-        -o "${TARGET_SO}"
-
-    "${STRIP}" --strip-unneeded "${TARGET_SO}"
-
-    local TARGET_CTL="${OUT_MODULE_DIR}/bin/x86/helperctl"
-    mkdir -p "${OUT_MODULE_DIR}/bin/x86"
-    echo "Compiling native helperctl CLI for Android x86..."
-    "${CXX}" -std=c++20 -O3 -static-libstdc++ -pie -fPIE \
-        -I"${ROOT_DIR}/third_party/json" \
-        -I"${ROOT_DIR}/include" \
-        "${ROOT_DIR}/cli/helperctl/helperctl.cpp" \
-        -o "${TARGET_CTL}"
-    "${STRIP}" --strip-unneeded "${TARGET_CTL}"
-    chmod 0755 "${TARGET_CTL}"
-
-    verify_shared_library "${TARGET_SO}" "Intel 80386" "x86.so" "${READELF}"
-    echo "✓ x86 build verified successfully!"
-}
-
 case "${BUILD_TARGET}" in
     arm64|arm64-v8a)
         build_arm64
         ;;
-    x86_64)
-        build_x86_64
-        ;;
     armeabi-v7a|arm)
         build_armeabi_v7a
         ;;
-    x86)
-        build_x86
-        ;;
     all)
         build_arm64
-        build_x86_64
         build_armeabi_v7a
-        build_x86
         ;;
     *)
-        echo "Usage: $0 [arm64-v8a|x86_64|armeabi-v7a|x86|all]"
+        echo "Usage: $0 [arm64-v8a|armeabi-v7a|all]"
         exit 1
         ;;
 esac

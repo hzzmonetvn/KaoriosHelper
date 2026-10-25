@@ -77,9 +77,9 @@ OK (29 passed, 0 failed, 0 errors)
 
 ## 3. On-Device Diagnostic Test Fixture Guide
 
-Dedicated native diagnostic test tools have been cross-compiled for both supported Android ABIs:
+Dedicated native diagnostic test tools have been cross-compiled for supported Android ARM ABIs:
 - **ARM64 (aarch64)**: `out/kaorios_fixture`
-- **x86_64 (emulator)**: `out/kaorios_fixture_x86_64`
+- **ARM32 (armv7a)**: `out/kaorios_fixture_arm32`
 - **Source**: `tools/test_fixture/fixture_main.cpp`
 - **Output Formats**: Human-readable terminal text or structured JSON (`--json`)
 - **Diagnostic Probes**:
@@ -105,8 +105,8 @@ Dedicated native diagnostic test tools have been cross-compiled for both support
    adb push out/kaorios_fixture /data/local/tmp/kaorios_fixture
    adb shell chmod 0755 /data/local/tmp/kaorios_fixture
 
-   # For x86_64 Android emulators (Cuttlefish / AVD):
-   adb push out/kaorios_fixture_x86_64 /data/local/tmp/kaorios_fixture
+   # For ARM32 devices:
+   adb push out/kaorios_fixture_arm32 /data/local/tmp/kaorios_fixture
    adb shell chmod 0755 /data/local/tmp/kaorios_fixture
    ```
 

@@ -147,8 +147,8 @@ void PifEngine::installPropertyHook() {
     if (hook_installed_) return;
 
 #if defined(__ANDROID__)
-#if defined(__i386__) && !defined(__x86_64__)
-    LOGW("PIF: 32-bit x86 architecture detected. ByteDance ShadowHook inline hooking is unsupported on 32-bit x86 (stub fallback). Native libc property interception unavailable on this ABI.");
+#if !defined(__arm__) && !defined(__aarch64__)
+    LOGW("PIF: Non-ARM architecture detected. KaoriosHelper is built exclusively for ARM devices (arm64-v8a, armeabi-v7a).");
     hook_installed_ = false;
     return;
 #else
@@ -422,8 +422,8 @@ void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
         ack.initResult = -1;
         ack.errorCode = ENOSYS;
         ack.eventType = AckEventType::APPLY_FAILED;
-#if defined(__i386__) && !defined(__x86_64__)
-        ack.detail = "ShadowHook inline hook engine unsupported on 32-bit x86 (stub fallback)";
+#if !defined(__arm__) && !defined(__aarch64__)
+        ack.detail = "Architecture unsupported: KaoriosHelper is built exclusively for ARM devices (arm64-v8a, armeabi-v7a)";
 #else
         ack.detail = "ShadowHook hook failed or unsupported on this ABI";
 #endif

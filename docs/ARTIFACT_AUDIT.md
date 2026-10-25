@@ -46,12 +46,11 @@ All Android binaries are cross-compiled using the official **Android NDK r26b** 
   - `libm.so`
   - `libdl.so`
 
-### 2.2 Dynamic Library: `module/zygisk/x86_64.so`
+### 2.2 Dynamic Library: `module/zygisk/armeabi-v7a.so`
 
-- **File Path**: `module/zygisk/x86_64.so`
-- **File Size**: 129,336 bytes (~127 KB)
-- **File Format**: ELF 64-bit LSB shared object, x86-64, version 1 (SYSV)
-- **Machine Code**: `Advanced Micro Devices X86-64` (`EM_X86_64` = 62)
+- **File Path**: `module/zygisk/armeabi-v7a.so`
+- **File Format**: ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV)
+- **Machine Code**: `ARM` (`EM_ARM` = 40)
 - **Dynamic Symbol Table**:
   - Scoped strictly to `zygisk_module_entry` and `zygisk_companion_entry`.
 
@@ -93,7 +92,7 @@ All Android binaries are cross-compiled using the official **Android NDK r26b** 
 | `0755` (`-rwxr-xr-x`) | 975 | `META-INF/com/google/android/update-binary` | Standard Magisk busybox bootstrap binary |
 | `0644` (`-rw-r--r--`) | 9 | `META-INF/com/google/android/updater-script` | Standard dummy updater script (`#MAGISK`) |
 | `0755` (`-rwxr-xr-x`) | 228,672 | `zygisk/arm64-v8a.so` | AArch64 Zygisk shared library (16KB aligned) |
-| `0755` (`-rwxr-xr-x`) | 129,336 | `zygisk/x86_64.so` | x86_64 emulator Zygisk shared library |
+| `0755` (`-rwxr-xr-x`) | 145,000 | `zygisk/armeabi-v7a.so` | ARM 32-bit Zygisk shared library |
 
 ### DEX Bytecode Presence Audit
 - **Audit Command**: `unzip -l out/kaorioshelper-v1.0.0.zip | grep -E "\.dex$"`

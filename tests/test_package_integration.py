@@ -11,9 +11,9 @@ from scripts.package_module import build_zip, MODULE_DIR, OUT_DIR
 BINARIES_READY = (
     (MODULE_DIR / "helperctl").is_file()
     and (MODULE_DIR / "zygisk/arm64-v8a.so").is_file()
-    and (MODULE_DIR / "zygisk/x86_64.so").is_file()
     and (MODULE_DIR / "zygisk/armeabi-v7a.so").is_file()
-    and (MODULE_DIR / "zygisk/x86.so").is_file()
+    and (MODULE_DIR / "bin/arm64-v8a/helperctl").is_file()
+    and (MODULE_DIR / "bin/armeabi-v7a/helperctl").is_file()
 )
 
 
@@ -39,13 +39,9 @@ class TestPackageIntegration(unittest.TestCase):
                 "helperctl.sh",
                 "helperctl",
                 "zygisk/arm64-v8a.so",
-                "zygisk/x86_64.so",
                 "zygisk/armeabi-v7a.so",
-                "zygisk/x86.so",
                 "bin/arm64-v8a/helperctl",
-                "bin/x86_64/helperctl",
                 "bin/armeabi-v7a/helperctl",
-                "bin/x86/helperctl",
                 "META-INF/com/google/android/update-binary",
                 "META-INF/com/google/android/updater-script",
             ]

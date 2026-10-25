@@ -11,10 +11,10 @@ DATA_DIR="$MODDIR/data"
 
 # If native compiled C++ helperctl binary is present, delegate directly to it
 ARCH="$(uname -m 2>/dev/null || echo '')"
-if [ "$ARCH" = "x86_64" ] && [ -x "$MODDIR/bin/x86_64/helperctl" ]; then
-  exec "$MODDIR/bin/x86_64/helperctl" "$@"
-elif [ "$ARCH" = "aarch64" ] && [ -x "$MODDIR/bin/arm64-v8a/helperctl" ]; then
+if [ "$ARCH" = "aarch64" ] && [ -x "$MODDIR/bin/arm64-v8a/helperctl" ]; then
   exec "$MODDIR/bin/arm64-v8a/helperctl" "$@"
+elif { [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "arm" ]; } && [ -x "$MODDIR/bin/armeabi-v7a/helperctl" ]; then
+  exec "$MODDIR/bin/armeabi-v7a/helperctl" "$@"
 elif [ -x "$MODDIR/helperctl" ]; then
   exec "$MODDIR/helperctl" "$@"
 fi

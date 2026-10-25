@@ -5,7 +5,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0.en.html)
 [![NDK: r26b](https://img.shields.io/badge/NDK-r26b%20(API%2031)-green.svg)](https://developer.android.com/ndk)
-[![ABI: arm64--v8a%20%7C%20x86__64](https://img.shields.io/badge/ABI-arm64--v8a%20%7C%20x86__64-orange.svg)]()
+[![ABI: arm64--v8a%20%7C%20armeabi--v7a](https://img.shields.io/badge/ABI-arm64--v8a%20%7C%20armeabi--v7a-orange.svg)]()
 [![Status: ALPHA](https://img.shields.io/badge/Status-ALPHA%20(Dev%2FLab)-yellow.svg)]()
 [![Device Status: DEVICE_NOT_TESTED](https://img.shields.io/badge/Hardware-DEVICE__NOT__TESTED-red.svg)]()
 
@@ -34,7 +34,7 @@ KaoriosHelper is a modern, unified Zygisk module engineered to eliminate conflic
 │ • SettingsProvider  │ │   inline hook│ │   validation │   setns mount (slave)│ • Atomic staging       │
 │ • InMemoryDexLoader │ │ • Verified   │ │ • GMS target │ • ANDROID_ID cache   │ • flock(LOCK_EX)       │
 │ • Direct ByteBuffer │ │   boot state │ │   confinement│   poisoning          │ • Multi-ABI (arm64/    │
-│ • (ALPHA: Scaff.)   │ │ • (BETA)     │ │ • (ALPHA)  │ │ • (BETA)           │ │   x86_64)            │
+│ • (ALPHA: Scaff.)   │ │ • (BETA)     │ │ • (ALPHA)  │ │ • (BETA)           │ │   armeabi-v7a)       │
 └─────────────────────┘ └──────────────┘ └────────────┘ └────────────────────┘ └──────────────────────┘
 ```
 
@@ -87,12 +87,12 @@ Under strict engineering truthfulness protocols, KaoriosHelper is classified as 
 
 ### Multi-ABI Cross-Compilation
 ```bash
-# Build for all supported ABIs (ARM64 and x86_64)
+# Build for all supported ARM ABIs (arm64-v8a and armeabi-v7a)
 bash scripts/build_android.sh all
 
 # Or build individual targets:
 bash scripts/build_android.sh arm64-v8a
-bash scripts/build_android.sh x86_64
+bash scripts/build_android.sh armeabi-v7a
 ```
 
 ### Packaging Flashable ZIP Module
@@ -119,8 +119,8 @@ python3 -m unittest discover -s tests -p "test_*.py"
 
 ### On-Device Diagnostic Test Fixture
 The build pipeline cross-compiles native diagnostic test fixtures for Android:
-- `out/kaorios_fixture` (AArch64)
-- `out/kaorios_fixture_x86_64` (x86_64)
+- `out/kaorios_fixture` (arm64-v8a)
+- `out/kaorios_fixture_arm32` (armeabi-v7a)
 
 ```bash
 # Push fixture to device/emulator

@@ -6,15 +6,15 @@
 
 ### Key Architectural Milestones Achieved:
 1. **Multi-ABI Android NDK Cross-Compilation Pipeline**:
-   - Cross-compiles genuine Bionic ELF shared objects (`module/zygisk/arm64-v8a.so` and `module/zygisk/x86_64.so`) and native CLI binaries (`bin/arm64-v8a/helperctl` and `bin/x86_64/helperctl`) using Android NDK r26b targeting Android API 31.
+   - Cross-compiles genuine Bionic ELF shared objects (`module/zygisk/arm64-v8a.so` and `module/zygisk/armeabi-v7a.so`) and native CLI binaries (`bin/arm64-v8a/helperctl` and `bin/armeabi-v7a/helperctl`) using Android NDK r26b targeting Android API 31.
    - Enforces 16KB page alignment (`-Wl,-z,max-page-size=16384`) for Android 15 compatibility.
    - Statically links libc++ (`-static-libstdc++`) to eliminate external C++ runtime dependencies on stock Android systems.
-   - Verified `EM_AARCH64` (183) on `arm64-v8a.so` and `EM_X86_64` (62) on `x86_64.so` with strict symbol export via GNU version script (`zygisk_export.map`) exporting solely `zygisk_module_entry` and `zygisk_companion_entry`.
+   - Verified `EM_AARCH64` (183) on `arm64-v8a.so` and `EM_ARM` (40) on `armeabi-v7a.so` with strict symbol export via GNU version script (`zygisk_export.map`) exporting solely `zygisk_module_entry` and `zygisk_companion_entry`.
 2. **Official Zygisk ABI Registration & Companion Handler**:
    - Implemented official Zygisk ABI contract (`REGISTER_ZYGISK_MODULE` and `REGISTER_ZYGISK_COMPANION`) compatible with Magisk v24–v27, KernelSU, APatch, and Zygisk Next.
    - Root companion socket handler enforces target app mount namespace isolation using peer credentials (`SO_PEERCRED`), `MS_SLAVE | MS_REC` mount propagation hardening, and `setns`.
 3. **Standalone Multi-ABI Native Control Plane (`helperctl`)**:
-   - Pure C++20 CLI running natively on Android with zero Python runtime dependency, cross-compiled for ARM64 and x86_64.
+   - Pure C++20 CLI running natively on Android with zero Python runtime dependency, cross-compiled for ARM64 and ARM32 (x86/x86_64 deprecated and removed).
    - Atomic configuration updates via temporary staging (`.tmp.<pid>`), exclusive file locking (`flock(LOCK_EX)`), permission hardening (`0600 root:root`), last-known-good (`.lkg`) automatic rollback, and symlink rejection.
 4. **HMA-OSS Scaffolding (ALPHA - Gated on DEX)**:
    - Native Zygote `system_server` lifecycle handler and in-memory DEX loader (`dalvik.system.InMemoryDexClassLoader`) via Direct ByteBuffers. Gracefully falls back when optional DEX is unbundled.
@@ -37,7 +37,7 @@
    - Strict Hook Ownership Isolation blocking COPG from targeting GMS or Play Store packages.
 8. **Automated Flashable Packaging & Multi-ABI Diagnostic Tooling**:
    - Assembles `out/kaorioshelper-v1.0.0.zip` with verified UNIX permissions (0755 for binaries/scripts, 0644 for metadata).
-   - Bundles native diagnostic CLI fixtures for both ARM64 (`out/kaorios_fixture`) and x86_64 (`out/kaorios_fixture_x86_64`).
+   - Bundles native diagnostic CLI fixtures for both ARM64 (`out/kaorios_fixture`) and ARM32 (`out/kaorios_fixture_arm32`).
 
 ---
 
@@ -90,8 +90,8 @@ Under strict engineering truthfulness protocols, KaoriosHelper CANNOT be classif
 +----------------------------------------------------------------------------------------------------+
 | Phase 1: Toolchain & Build Pipeline (COMPLETE)                                                     |
 |   • Set up Android NDK r26b cross-compilation pipeline                                             |
-|   • Produce genuine ARM64-v8a (EM_AARCH64) and x86_64 shared libraries with 16KB page alignment     |
-|   • Build native AArch64 helperctl CLI and kaorios_fixture diagnostic tools                         |
+|   • Produce genuine ARM64-v8a (EM_AARCH64) and armeabi-v7a (EM_ARM) shared libraries with 16KB align |
+|   • Build native ARM helperctl CLI and kaorios_fixture diagnostic tools                             |
 +----------------------------------------------------------------------------------------------------+
 | Phase 2: Host Harness Validation (COMPLETE)                                                        |
 |   • 27/27 Native C++ Unit Tests (lifecycle, ABI, Keystore non-interference)                         |

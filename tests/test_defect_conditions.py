@@ -187,16 +187,15 @@ class TestDefectConditions(unittest.TestCase):
         self.assertTrue(validate_target_namespace(target_private_ns, root_ns_inode, companion_ns_inode))
 
     def test_unsupported_arch_reported(self):
-        """Unsupported architectures (e.g. 32-bit x86 for ShadowHook) must report failure with detail."""
-        arch = "x86"  # 32-bit
-        shadowhook_supported_archs = ["arm64-v8a", "armeabi-v7a", "x86_64"]
+        """Unsupported architectures (e.g. x86 and x86_64) must report failure with detail."""
+        supported_archs = ["arm64-v8a", "armeabi-v7a"]
 
         def check_arch_support(target_abi: str) -> dict:
-            if target_abi not in shadowhook_supported_archs:
+            if target_abi not in supported_archs:
                 return {
                     "initResult": -1,
                     "eventType": "APPLY_FAILED",
-                    "detail": "ShadowHook inline hook engine unsupported on 32-bit x86 (stub fallback)"
+                    "detail": f"Architecture '{target_abi}' unsupported: KaoriosHelper targets ARM devices exclusively"
                 }
             return {
                 "initResult": 0,
@@ -204,10 +203,18 @@ class TestDefectConditions(unittest.TestCase):
                 "detail": "ShadowHook active"
             }
 
-        res = check_arch_support(arch)
-        self.assertEqual(res["initResult"], -1)
-        self.assertEqual(res["eventType"], "APPLY_FAILED")
-        self.assertIn("unsupported on 32-bit x86", res["detail"])
+        res_x86 = check_arch_support("x86")
+        self.assertEqual(res_x86["initResult"], -1)
+        self.assertEqual(res_x86["eventType"], "APPLY_FAILED")
+        self.assertIn("unsupported", res_x86["detail"])
+
+        res_x64 = check_arch_support("x86_64")
+        self.assertEqual(res_x64["initResult"], -1)
+        self.assertEqual(res_x64["eventType"], "APPLY_FAILED")
+        self.assertIn("unsupported", res_x64["detail"])
+
+        res_arm64 = check_arch_support("arm64-v8a")
+        self.assertEqual(res_arm64["initResult"], 0)
 
 
 if __name__ == "__main__":

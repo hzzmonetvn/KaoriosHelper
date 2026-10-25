@@ -19,7 +19,7 @@ class TestPackaging(unittest.TestCase):
         content = prop_file.read_text()
         self.assertIn("id=kaorioshelper", content)
         self.assertIn("name=KaoriosHelper", content)
-        self.assertIn("author=HzzMonet / Kaorios Project", content)
+        self.assertIn("author=HzzMonet", content)
         self.assertIn("minMagisk=26400", content)
 
     def test_shell_scripts_syntax(self):

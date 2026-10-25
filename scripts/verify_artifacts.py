@@ -95,13 +95,9 @@ def verify_zip(zip_path: Path):
             "helperctl.sh",
             "helperctl",
             "zygisk/arm64-v8a.so",
-            "zygisk/x86_64.so",
             "zygisk/armeabi-v7a.so",
-            "zygisk/x86.so",
             "bin/arm64-v8a/helperctl",
-            "bin/x86_64/helperctl",
             "bin/armeabi-v7a/helperctl",
-            "bin/x86/helperctl",
             "META-INF/com/google/android/update-binary",
             "META-INF/com/google/android/updater-script",
         ]
@@ -115,7 +111,7 @@ def verify_zip(zip_path: Path):
                 if not (mode & 0o111):
                     raise PermissionError(f"Executable permissions missing on {entry.filename}")
 
-    print(f"  ✓ Module ZIP {zip_path.name}: All 4 ABIs and control scripts verified with executable permissions")
+    print(f"  ✓ Module ZIP {zip_path.name}: ARM ABIs (arm64-v8a, armeabi-v7a) and control scripts verified with executable permissions")
 
 
 def print_status_matrix(host_ok: bool, cross_ok: bool, package_ok: bool):
@@ -125,7 +121,7 @@ def print_status_matrix(host_ok: bool, cross_ok: bool, package_ok: bool):
     print(f"{'Dimension':<26} {'Status':<16} {'Notes'}")
     print("-" * 80)
     print(f"{'HOST_TESTED':<26} {('PASS' if host_ok else 'FAIL'):<16} C++20 (36 native tests) & Python (41 tests) passed")
-    print(f"{'ANDROID_CROSS_COMPILED':<26} {('PASS' if cross_ok else 'FAIL'):<16} 4 ABIs (arm64, x86_64, arm, x86) compiled & verified")
+    print(f"{'ANDROID_CROSS_COMPILED':<26} {('PASS' if cross_ok else 'FAIL'):<16} 2 ABIs (arm64-v8a, armeabi-v7a) compiled & verified")
     print(f"{'PACKAGED':<26} {('PASS' if package_ok else 'FAIL'):<16} Flashable ZIP assembled with complete permissions")
     print(f"{'DEVICE_TESTED':<26} {'NOT_RUN':<16} Gated on physical hardware attachment")
     print(f"{'RUNTIME_VERIFIED':<26} {'NOT_RUN':<16} Gated on live target process specialization")
@@ -155,15 +151,11 @@ def main():
 
     print("\n[Stage 1/3] Verifying Multi-ABI Shared Libraries...")
     verify_so(readelf, ZYGISK_DIR / "arm64-v8a.so", "aarch64", "arm64-v8a.so")
-    verify_so(readelf, ZYGISK_DIR / "x86_64.so", "x86-64", "x86_64.so")
     verify_so(readelf, ZYGISK_DIR / "armeabi-v7a.so", "arm", "armeabi-v7a.so")
-    verify_so(readelf, ZYGISK_DIR / "x86.so", "80386", "x86.so")
 
     print("\n[Stage 2/3] Verifying Multi-ABI Native Executables...")
     verify_exe(readelf, BIN_DIR / "arm64-v8a/helperctl", "aarch64")
-    verify_exe(readelf, BIN_DIR / "x86_64/helperctl", "x86-64")
     verify_exe(readelf, BIN_DIR / "armeabi-v7a/helperctl", "arm")
-    verify_exe(readelf, BIN_DIR / "x86/helperctl", "80386")
     cross_ok = True
 
     print("\n[Stage 3/3] Verifying Package ZIP...")

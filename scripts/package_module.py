@@ -54,9 +54,7 @@ def build_zip(
     binary_files = [
         "helperctl",
         "zygisk/arm64-v8a.so",
-        "zygisk/x86_64.so",
         "zygisk/armeabi-v7a.so",
-        "zygisk/x86.so",
     ]
 
     for rel_path in required_files:

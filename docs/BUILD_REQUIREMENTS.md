@@ -22,8 +22,8 @@ Building KaoriosHelper reproducibly from source requires the following toolchain
 
 ### 2.1 Target ABIs
 1. **`arm64-v8a`** (Primary focus: modern Android 12–17 devices)
-2. **`armeabi-v7a`** (32-bit legacy app translation / 32-bit processes on 64-bit kernels)
-3. **`x86_64`** (Android emulators, Google Play Games PC, development environments)
+2. **`armeabi-v7a`** (32-bit legacy ARM processes)
+*(Note: x86 and x86_64 support has been removed; KaoriosHelper is built exclusively for ARM devices)*
 
 ### 2.2 Critical Native Compiler Flags
 ```cmake
@@ -49,7 +49,6 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--gc-sections -W
 - **Output**:
   - `module/zygisk/arm64-v8a.so`
   - `module/zygisk/armeabi-v7a.so`
-  - `module/zygisk/x86_64.so`
 - **Link Dependencies**: `libc++_static.a`, `liblog.so`, `libshadowhook.so` (static or symbol-hidden).
 
 ### 3.2 HMA Engine DEX (`hma_classes.dex`)

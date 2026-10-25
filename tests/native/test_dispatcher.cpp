@@ -682,11 +682,11 @@ void test_unsupported_arch_reported(const std::string &dir) {
     ack.initResult = -1;
     ack.errorCode = ENOSYS;
     ack.eventType = kaorios::AckEventType::APPLY_FAILED;
-    ack.detail = "ShadowHook inline hook engine unsupported on 32-bit x86 (stub fallback)";
+    ack.detail = "Architecture unsupported: KaoriosHelper is built exclusively for ARM devices (arm64-v8a, armeabi-v7a)";
 
     assert(ack.initResult != 0);
     assert(ack.eventType == kaorios::AckEventType::APPLY_FAILED);
-    assert(ack.detail.find("unsupported on 32-bit x86") != std::string::npos);
+    assert(ack.detail.find("unsupported") != std::string::npos);
     std::cout << "  [PASS] test_unsupported_arch_reported" << std::endl;
 }
 

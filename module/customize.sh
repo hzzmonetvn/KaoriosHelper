@@ -44,6 +44,12 @@ ARCH=$(getprop ro.product.cpu.abi)
 ABILIST=$(getprop ro.product.cpu.abilist)
 ui_print "  Primary Device ABI: $ARCH ($ABILIST)"
 
+case "$ARCH" in
+  x86*|i686*|amd64*)
+    abort "! Error: x86 and x86_64 architectures are not supported. KaoriosHelper is built exclusively for ARM devices (arm64-v8a, armeabi-v7a)."
+    ;;
+esac
+
 # ── 4. Zygisk Environment Detection ──────────────────────────────────────────
 ui_print "- Checking Zygisk environment..."
 ZYGISK_AVAILABLE=false
@@ -156,7 +162,7 @@ EOF
 }
 EOF
 
-# ABI binary selection (preserve both 64-bit and 32-bit libraries on mixed-ABI devices)
+# ABI binary selection (preserve both 64-bit and 32-bit ARM libraries on mixed-ABI devices)
 if [ -d "$MODPATH/zygisk" ]; then
   ALL_ABIS="$ARCH $ABILIST"
   if ! echo "$ALL_ABIS" | grep -qE "arm64|aarch64"; then
@@ -165,15 +171,11 @@ if [ -d "$MODPATH/zygisk" ]; then
   if ! echo "$ALL_ABIS" | grep -qE "armeabi|armv7|arm"; then
     rm -f "$MODPATH/zygisk/armeabi-v7a.so" 2>/dev/null || true
   fi
-  if ! echo "$ALL_ABIS" | grep -qE "x86_64|amd64"; then
-    rm -f "$MODPATH/zygisk/x86_64.so" 2>/dev/null || true
-  fi
-  if ! echo "$ALL_ABIS" | grep -qE "x86|i686"; then
-    rm -f "$MODPATH/zygisk/x86.so" 2>/dev/null || true
-  fi
+  # Purge any legacy x86 / x86_64 artifacts
+  rm -f "$MODPATH/zygisk/x86_64.so" "$MODPATH/zygisk/x86.so" 2>/dev/null || true
 fi
 
-# Multi-ABI helperctl installation (arm64-v8a, armeabi-v7a, x86_64, x86)
+# Multi-ABI helperctl installation (arm64-v8a, armeabi-v7a)
 HELPERCTL_INSTALLED=false
 for abi_cand in "$ARCH" $(echo "$ABILIST" | tr ',' ' '); do
   case "$abi_cand" in
@@ -189,22 +191,6 @@ for abi_cand in "$ARCH" $(echo "$ABILIST" | tr ',' ' '); do
       if [ -f "$MODPATH/bin/armeabi-v7a/helperctl" ]; then
         cp -f "$MODPATH/bin/armeabi-v7a/helperctl" "$MODPATH/helperctl"
         ui_print "  Installed native helperctl (armeabi-v7a)"
-        HELPERCTL_INSTALLED=true
-        break
-      fi
-      ;;
-    x86_64*|amd64*)
-      if [ -f "$MODPATH/bin/x86_64/helperctl" ]; then
-        cp -f "$MODPATH/bin/x86_64/helperctl" "$MODPATH/helperctl"
-        ui_print "  Installed native helperctl (x86_64)"
-        HELPERCTL_INSTALLED=true
-        break
-      fi
-      ;;
-    x86*|i686*)
-      if [ -f "$MODPATH/bin/x86/helperctl" ]; then
-        cp -f "$MODPATH/bin/x86/helperctl" "$MODPATH/helperctl"
-        ui_print "  Installed native helperctl (x86)"
         HELPERCTL_INSTALLED=true
         break
       fi
