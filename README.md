@@ -40,40 +40,42 @@ KaoriosHelper is a modern, unified Zygisk module engineered to eliminate conflic
 
 ---
 
+## Current verification checkpoint — 2026-11-12
+
+The 2.0 working branch is an incremental hardening release, not a completed architecture refactor. Current evidence and blockers are maintained in [SOURCE_AUDIT_2.md](docs/SOURCE_AUDIT_2.md), [FEATURE_PARITY.md](docs/FEATURE_PARITY.md), and [RELEASE_READINESS.md](docs/RELEASE_READINESS.md). Native configuration validation and persistence, failure containment, upstream update proposals, and release packaging have been improved. Settings.Global synchronization, complete snapshot migration, runtime generation linkage, and the Kaorios framework/Zygisk backend remain incomplete. No physical-device validation has been performed.
+
+The older architectural descriptions below are historical context, not proof of current runtime functionality. Boot-wide property mutations have been removed; KOW Inject is pinned separately from PlayIntegrityFork and its `pif.prop` format is not implemented as a compatible adapter.
+
 ## 2. Subsystems & Maturity Matrix
 
 Under strict engineering truthfulness protocols, KaoriosHelper is classified as **ALPHA (Developer / Lab Test Build)**. Production readiness cannot be claimed until physical device field testing is completed (`DEVICE_NOT_TESTED`) and mandatory runtime components are fully resolved.
 
 | Subsystem | Upstream Ancestor | Maturity | Hook & Runtime Mechanism | Device Status |
 |---|---|---|---|---|
-| **Zygisk Core** | `topjohnwu/zygisk-module-sample` | **PRODUCTION (100%)** | Official Zygisk ABI v4, `dlclose` unmanaged, `SO_PEERCRED` namespace isolation | `DEVICE_NOT_TESTED` |
-| **Control Plane** | Native C++ Rewrite | **PRODUCTION (100%)** | Pure C++20 CLI (`helperctl`), multi-ABI, atomic file staging, `flock(LOCK_EX)` | `DEVICE_NOT_TESTED` |
-| **PIF Engine** | `osm0sis/PlayIntegrityFork` | **BETA (95%)** | ShadowHook inline hook on Bionic libc `__system_property_read_callback` | `DEVICE_NOT_TESTED` |
-| **COPG Engine** | `07c6482e` (COPG) | **BETA (90%)** | Peer `setns` mount (`MS_SLAVE`), client-side `ANDROID_ID` cache poisoning | `DEVICE_NOT_TESTED` |
-| **TEE Engine** | `TrickyStore` / `AlwaysStrong` | **ALPHA (50%)** | Keybox XML parser active; Keystore2 ptrace daemon external; disabled by default | `DEVICE_NOT_TESTED` |
-| **HMA Engine** | `frknkrc44/HMA-OSS` | **ALPHA (40%)** | Native `InMemoryDexClassLoader` scaffolding; DEX unbundled (gated on JDK/SDK build) | `DEVICE_NOT_TESTED` |
+| **Zygisk Core** | `topjohnwu/zygisk-module-sample` | **PARTIAL** | Official Zygisk ABI v4, `dlclose` unmanaged, `SO_PEERCRED` namespace isolation | `DEVICE_NOT_TESTED` |
+| **Control Plane** | Native C++ Rewrite | **PARTIAL** | Pure C++20 CLI (`helperctl`), multi-ABI, atomic file staging, `flock(LOCK_EX)` | `DEVICE_NOT_TESTED` |
+| **PIF Engine** | `osm0sis/PlayIntegrityFork` | **DEVICE_UNVERIFIED** | ShadowHook inline hook on Bionic libc `__system_property_read_callback` | `DEVICE_NOT_TESTED` |
+| **COPG Engine** | `07c6482e` (COPG) | **PARTIAL** | Peer `setns` mount (`MS_SLAVE`), client-side `ANDROID_ID` cache poisoning | `DEVICE_NOT_TESTED` |
+| **TEE Engine** | `TrickyStore` / `AlwaysStrong` | **BLOCKED** | Keybox XML parser active; Keystore2 ptrace daemon external; disabled by default | `DEVICE_NOT_TESTED` |
+| **HMA Engine** | `frknkrc44/HMA-OSS` | **PARTIAL** | Native DEX loader and CI-packaged DEX; entrypoint/service boundary unresolved | `DEVICE_NOT_TESTED` |
 
 ---
 
 ## 3. Honest Runtime Blockers & Technical Analysis
 
-### 3.1 HMA Engine: Platform Compilation Blocker
-- **Architecture**: Injects into `system_server` (UID 1000) during `preServerSpecialize`. Employs `dalvik.system.InMemoryDexClassLoader` via Direct ByteBuffers targeting `org.frknkrc44.hma_oss.zygote.ZygoteEntry`.
-- **Platform Blocker**: Compiling the upstream HMA Java/Kotlin bytecode requires a full OpenJDK (`javac`) and Android SDK 34 platform build-tools (`d8`). Headless build environments with JRE-only runtimes fail Gradle build with:
-  ```
-  org.gradle.api.internal.catalog.GeneratedClassCompilationException: No Java compiler found, please ensure you are running Gradle with a JDK
-  ```
-- **Runtime Safety**: In the absence of an externally provided `classes.dex`, the native C++ engine logs a non-fatal warning and safely skips bytecode injection, ensuring `system_server` boots reliably without crashes or bootloops.
+### 3.1 HMA Engine: Runtime Integration Blockers
+- **Build evidence**: CI builds and packages `classes.dex` using a JDK and Android SDK build-tools. Missing DEX is a packaging failure, not the current compilation blocker.
+- **Runtime gaps**: The preferred Java entrypoint does not implement the native-expected initialization/state contract. Process-local proxies do not establish remote Binder behavior.
+- **Qualification**: Host tests and a compiled DEX do not establish successful system_server initialization or boot stability.
 
 ### 3.2 TEE Engine: Keystore2 System Daemon Isolation
-- **Architecture**: Validates Google Keybox XML schemas, ECDSA/RSA declarations, and certificate chains.
-- **Daemon Isolation**: On Android 12+, `/system/bin/keystore2` is a native Rust daemon spawned directly by `init.rc` (UID 1017:1017, `u:r:keystore:s0`), completely outside Zygote.
-- **Consequence for Zygisk**: Pure Zygisk modules cannot intercept `IKeyMintDevice::attestKey` inside `keystore2` without an out-of-process root daemon attaching via `ptrace(PTRACE_ATTACH)`.
+- **Validation limit**: Keybox inspection checks selected XML structure only; it does not establish cryptographic key/certificate validity or certificate-chain trust.
+- **Runtime gap**: Keystore2 is outside the Zygote lifecycle. The required backend dependency chain is absent; XML configuration alone does not establish an active TEE runtime.
 - **Safe Default**: TEE is **disabled by default** (`enabled: false`) to safeguard Android lockscreen PIN decryption, biometric enrollment, and hardware key generation. XML parsing is not claimed as genuine hardware attestation.
 
 ### 3.3 COPG Engine: Mount Propagation Hardening
 - **Namespace Virtualization**: Uses `getsockopt(SOL_SOCKET, SO_PEERCRED)` to obtain the client PID and switches into the target mount namespace via `setns(open("/proc/<pid>/ns/mnt"), CLONE_NEWNS)`.
-- **Propagation Hardening**: Enforces `mount(nullptr, "/proc", nullptr, MS_SLAVE | MS_REC, nullptr)` before bind-mounting `/proc/cpuinfo`. This guarantees the mount **never leaks** into parent or peer namespaces.
+- **Open confinement finding**: Namespace prerequisites and propagation return handling are incomplete. Source presence does not guarantee mount isolation; device qualification remains pending.
 - **ANDROID_ID Cache Poisoning**: Injects an anonymous `android.util.MemoryIntArray(1)` generation tracker into `android.provider.Settings$Secure.sNameValueCache` to spoof `ANDROID_ID` without generating detectable Binder RPC transactions to `SettingsProvider`.
 
 ---
@@ -81,7 +83,7 @@ Under strict engineering truthfulness protocols, KaoriosHelper is classified as 
 ## 4. Building from Source
 
 ### Prerequisites
-- **Android NDK**: r26b or newer (with LLVM toolchain targeting Android API 31+).
+- **Android NDK**: exactly r26b (`26.1.10909125`) (with LLVM toolchain targeting Android API 31+).
 - **Host Compiler**: GCC 13+ or Clang 17+ supporting C++20.
 - **Build Tools**: CMake 3.22+, GNU Make, Python 3.10+.
 
@@ -107,14 +109,14 @@ python3 scripts/package_module.py
 
 ### Host Unit Tests
 ```bash
-# Build and run native C++ unit tests (27 tests)
+# Build and run native C++ unit tests
 mkdir -p build && cd build
 cmake .. && make -j$(nproc)
 ./test_native
 
-# Run Python management tests (29 tests)
+# Run Python management tests
 cd ..
-python3 -m unittest discover -s tests -p "test_*.py"
+PYTHONPATH=. python3 -m unittest discover -s tests -p "test_*.py"
 ```
 
 ### On-Device Diagnostic Test Fixture
@@ -146,7 +148,7 @@ helperctl status --json
 helperctl enable copg
 helperctl disable tee
 
-# Trigger atomic configuration reload
+# Request reload; completion requires a matching successful runtime ACK
 helperctl reload all
 ```
 

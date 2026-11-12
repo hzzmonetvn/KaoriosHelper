@@ -1,131 +1,44 @@
-# KaoriosHelper Test Results & Verification Report
+# Test Results and Evidence Boundary
 
-## 1. Executive Testing Status
+## Checkpoint — 2026-11-12
 
-| Environment | Scope | Result | Details |
-|---|---|---|---|
-| **Host Environment** | Linux x86_64 (CachyOS) | **PASSED (100%)** | 27/27 Native C++ Unit Tests Passed<br>29/29 Python Management Tests Passed<br>Cross-compilation pipelines verified |
-| **Physical Hardware** | Android 12–15 Devices | **`DEVICE_NOT_TESTED`** | No physical hardware connected in headless CI environment |
+| Evidence | Result | Qualification |
+|---|---|---|
+| Earlier host baseline | 36 native cases; 43 Python tests; one Python skip | Baseline counts, not measured coverage |
+| Coordinating implementation run | 37 native cases; 59 Python tests; one Python skip | Reported verified by coordinating session; run-specific working-tree result, not independently rerun by this documentation pass |
+| Commit reference | `ca95c37` | Callback containment, boot mutation removal and release hardening; later working-tree edits are separate |
+| CI run `43219029337`, `ca95c37` | SUCCESS verified by coordinating session | Android ZIP artifact `13945066444`; not device acceptance |
+| Final CI `43219803240`, `3045411` | SUCCESS verified by coordinating session | Host and Android jobs passed; no hardware acceptance implied |
+| Android physical hardware | DEVICE_UNVERIFIED | No physical-device run or result recorded |
 
-> **IMPORTANT TRUTHFULNESS NOTICE**:
-> Under strict honesty protocols, KaoriosHelper is classified as **`DEVICE_NOT_TESTED`** for on-device hardware operations. While all native code is cross-compiled into authentic AArch64 Bionic ELF binaries and verified via mock Zygisk ABI harnesses, production readiness cannot be asserted until physical field validation is conducted.
+Historical 27-native/29-Python transcript excerpts are superseded as current counts. No all-tests transcript is invented here. Exact invocation, revision and output should accompany subsequent results; additional tests may change these numbers.
 
----
+## What host evidence establishes
 
-## 2. Host Test Suite Results
+Host tests exercise dispatcher/configuration/tooling paths with mocked Zygisk and no-op JNI. Some baseline cases construct local expected states rather than call production failure paths. Packaging tests may skip real artifacts when absent. Passing these tests does not establish Android reflection, SELinux access, actual hook effects, Binder-client coverage, namespace confinement or Keystore non-interference.
 
-### 2.1 Native C++ Test Suite (`tests/native/test_dispatcher.cpp`)
-Executed using host C++20 compiler with Zygisk mock context:
-```
-========================================================
-      KAORIOSHELPER NATIVE TEST SUITE (27 TESTS)        
-========================================================
+The source audit reports in `/tmp/kaorios-audit-reports/0.txt` through `4.txt` were read-only inspections and did not execute tests. Git-object identity verification is source provenance evidence, not device execution or complete license/dependency closure.
 
-[SUITE 1/6] HMA Engine Tests:
-  [PASS] test_hma_positive
-  [PASS] test_hma_negative
-  [PASS] test_hma_malformed
-  [PASS] test_hma_reload
-  [PASS] test_hma_recovery
+## Required hardware results — all pending
 
-[SUITE 2/6] PIF Engine Tests:
-  [PASS] test_pif_positive
-  [PASS] test_pif_negative
-  [PASS] test_pif_malformed
-  [PASS] test_pif_reload
-  [PASS] test_pif_recovery
+| Gate | Required observation | Current result |
+|---|---|---|
+| Root/loader matrix | Magisk, KernelSU, APatch with exact Zygisk provider/version | DEVICE_UNVERIFIED |
+| Platform/ABI | API 31+; ARM64 and ARM32 app/module paths | DEVICE_UNVERIFIED |
+| Install/boot | Real library and companion load; stable system_server startup | DEVICE_UNVERIFIED |
+| HMA | Independent client package queries and unchanged exempt clients | DEVICE_UNVERIFIED; service-boundary implementation incomplete |
+| PIF | Actual configured JNI/native values and callback observations | DEVICE_UNVERIFIED; external verdicts are separate evidence |
+| COPG | Target effects, late-library behavior, exact namespace/content and unchanged unrelated apps | DEVICE_UNVERIFIED |
+| Runtime status | Current generation/boot/process identity after reload, failure, restart and reboot | BLOCKED generation/snapshot linkage: PIF/COPG emit 0, HMA emits 1; truthful CLI cannot converge to subsequent stored generations; hardware DEVICE_UNVERIFIED |
+| Global mutation absence | Unrelated global properties/settings unchanged, including compatibility paths | DEVICE_UNVERIFIED; removal implemented under requirement 8 |
+| Upgrade | Persistent configs preserved, stale runtime evidence excluded | DEVICE_UNVERIFIED |
+| Uninstall/restore | Cleanup and documented backup recovery work | DEVICE_UNVERIFIED |
+| Keystore | Ordinary key generation/sign/use unaffected before/after activation, upgrade and uninstall | DEVICE_UNVERIFIED |
+| TEE runtime | Active backend and cryptographic acceptance | BLOCKED; structural keybox inspection only |
+| Settings.Global synchronization | Defined mapping and measured application | BLOCKED; explicit unsupported, no settings changed |
 
-[SUITE 3/6] TEE Engine Tests:
-  [PASS] test_tee_positive
-  [PASS] test_tee_negative
-  [PASS] test_tee_malformed
-  [PASS] test_tee_reload
-  [PASS] test_tee_recovery
+## Recording the next result
 
-[SUITE 4/6] COPG Engine Tests:
-  [PASS] test_copg_positive
-  [PASS] test_copg_negative
-  [PASS] test_copg_malformed
-  [PASS] test_copg_reload
-  [PASS] test_copg_recovery
+Record commit and dirty-tree state, device/build/API, ABI, root-loader/Zygisk versions, artifact checksum, baseline, exact commands, target and unrelated-client observations, exit status and redacted logs. A diagnostic fixture running as a separate root process is not evidence that target-app hooks executed. `tools/test_fixture/fixture_main.cpp` is a diagnostic aid, not a complete acceptance harness.
 
-[SUITE 5/6] Dispatcher Lifecycle & Safety Tests:
-  [PASS] test_dispatcher_unmanaged_dlclose
-  [PASS] test_dispatcher_managed_claim
-  [PASS] test_dispatcher_null_nice_name_fallback
-  [PASS] test_dispatcher_server_specialization
-  [PASS] test_dispatcher_server_disabled_dlclose
-
-[SUITE 6/6] ABI Contract & Keystore Non-Interference Tests:
-  [PASS] test_abi_table_contract_verification
-  [PASS] test_tee_keystore_keygen_non_interference
-
-========================================================
-    ALL 27 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     
-========================================================
-```
-
-### 2.2 Python Management & Packaging Test Suite (`tests/`)
-Executed via `python3 -m unittest discover -s tests -p "test_*.py"`:
-```
-Ran 29 tests in 0.035s
-OK (29 passed, 0 failed, 0 errors)
-```
-- Verified configuration parser, atomic staging, flock locking, symlink rejection, rollback logic, and module packaging file attributes (0755 binaries, 0644 metadata).
-
----
-
-## 3. On-Device Diagnostic Test Fixture Guide
-
-Dedicated native diagnostic test tools have been cross-compiled for supported Android ARM ABIs:
-- **ARM64 (aarch64)**: `out/kaorios_fixture`
-- **ARM32 (armv7a)**: `out/kaorios_fixture_arm32`
-- **Source**: `tools/test_fixture/fixture_main.cpp`
-- **Output Formats**: Human-readable terminal text or structured JSON (`--json`)
-- **Diagnostic Probes**:
-  1. `__system_property_read_callback` libc property spoofing.
-  2. `/proc/cpuinfo` mount virtualization and hardware string verification.
-  3. `ANDROID_ID` client-side `sNameValueCache` poisoning probe.
-  4. `/system/bin/keystore2` daemon presence and ptrace accessibility.
-  5. PackageManager package visibility filtering check.
-
-### Reproduction Instructions via `adb`:
-
-1. **Flash Module**:
-   ```bash
-   adb push out/kaorioshelper-v1.0.0.zip /data/local/tmp/
-   adb shell su -c "magisk --install-module /data/local/tmp/kaorioshelper-v1.0.0.zip"
-   # Or flash via KernelSU / APatch Manager
-   adb reboot
-   ```
-
-2. **Deploy Test Fixture Matching Target ABI**:
-   ```bash
-   # For ARM64 physical devices:
-   adb push out/kaorios_fixture /data/local/tmp/kaorios_fixture
-   adb shell chmod 0755 /data/local/tmp/kaorios_fixture
-
-   # For ARM32 devices:
-   adb push out/kaorios_fixture_arm32 /data/local/tmp/kaorios_fixture
-   adb shell chmod 0755 /data/local/tmp/kaorios_fixture
-   ```
-
-3. **Execute Diagnostics Across Operational States**:
-   ```bash
-   # State A: Baseline (Before Module Activation)
-   adb shell su -c "/data/local/tmp/kaorios_fixture --json"
-
-   # State B: Module Active with Default Engines (PIF active, HMA scaffolding active, TEE/COPG safe disabled)
-   adb shell su -c "/data/adb/modules/kaorioshelper/helperctl.sh status"
-   adb shell su -c "/data/local/tmp/kaorios_fixture --json"
-
-   # State C: Dynamic Engine Control Validation
-   adb shell su -c "/data/adb/modules/kaorioshelper/helperctl.sh enable copg"
-   adb shell su -c "/data/adb/modules/kaorioshelper/helperctl.sh reload copg"
-   adb shell su -c "/data/adb/modules/kaorioshelper/helperctl.sh status"
-   ```
-
-4. **Verify Live Zygisk Dispatch in Logcat**:
-   ```bash
-   adb logcat -d -s KaoriosHelper | grep -E "Dispatcher loaded|PIF|HMA|COPG|companion"
-   ```
+No fabricated PASS row closes a pending gate. Configuration-file presence, DEX presence, an ACK counter or local proxy initialization are not end-to-end hardware proof.

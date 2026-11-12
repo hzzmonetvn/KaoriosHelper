@@ -1,183 +1,55 @@
-# KaoriosHelper Architecture Specification
+# Architecture
 
-## 1. High-Level Vision & Design Principles
+Evidence checkpoint: 2026-11-12; `ca95c37` plus separately identified working-tree configuration/upstream changes. This describes implemented boundaries and open contracts, not a completion specification.
 
-**KaoriosHelper** is a unified Root + Zygisk framework designed to serve as the Root Mode runtime backend for **Kaorios Toolbox**. It consolidates the distinct capabilities of four leading open-source root utilities:
-1. **HMA Engine**: Advanced application visibility filtering, package manager filtering, installer source spoofing, and settings protection.
-2. **PIF Engine**: Device profile emulation and GMS/DroidGuard system property virtualization.
-3. **TEE Engine**: Hardware-backed keystore attestation simulation via KeyMint / Keystore2 interception.
-4. **COPG Engine**: Per-app device profile spoofing, CPU information emulation, and gaming optimizations.
+## Runtime and control boundaries
 
-### 1.1 Architectural Axioms
-1. **One Module Identity**: Distributed as a single installable root module (`kaorioshelper`).
-2. **Unified Storage Contract**: All runtime configurations reside in `/data/adb/modules/kaorioshelper/data/` (`pif.json`, `keybox.xml`, `spoof.json`, `hma.json`).
-3. **Decoupled Engines**: Engines operate as independent modular subsystems coordinated by a centralized runtime controller.
-4. **Zero-Overhead Dispatcher**: A single unified Zygisk library (`libkaorioshelper.so`) selectively dispatches to engine hooks based on process identity and immediately requests `dlclose` in unmanaged processes.
-5. **Fail-Closed Boot Safety**: No configuration error or hook crash is permitted to panic `system_server` or induce bootloops.
+KaoriosHelper has a native Zygisk dispatcher, four engine adapters, a native `helperctl`, shell lifecycle scripts and host-side Python tooling. It is intended to support a root-mode frontend, but a complete Toolbox/ROM runtime bridge is not established.
 
----
+| Source | Responsibility | Status / boundary |
+|---|---|---|
+| `zygisk/src/entry.cpp` | Module and privileged companion entrypoints | IMPLEMENTED; IPC/lifecycle and namespace checks remain PARTIAL |
+| `zygisk/src/dispatcher.cpp` | Route engines and contain callback exceptions | IMPLEMENTED; exceptions isolated in `ca95c37`, not all crash classes |
+| `engines/hma/`, `dex/src/` | Native DEX loading, Java policy/proxy scaffolding | PARTIAL; native/Java interface and service-boundary coverage unresolved |
+| `engines/pif/` | Targeted JNI Build and native property paths | IMPLEMENTED / DEVICE_UNVERIFIED; provider/recovery incomplete |
+| `engines/tee/` | Enablement and structural keybox inspection | PARTIAL; attestation runtime BLOCKED |
+| `engines/copg/` | Per-app profile/JNI/PLT and companion mount paths | PARTIAL / DEVICE_UNVERIFIED |
+| `cli/helperctl/helperctl.cpp` | Deployed native configuration/status commands | PARTIAL; status/ACK integration is not fully verified |
+| `core/config/native_store.hpp` | Working-tree native persistence primitive | IMPLEMENTED single-file publication; not a multi-file transaction |
+| `core/**/*.py` | Host configuration/runtime/status/registry/logging models | Separate contracts; not an Android Python runtime dependency |
+| `module/` | Installation, boot, service, uninstall and CLI delegation | Hardware lifecycle qualification pending |
+| `scripts/`, `.github/workflows/` | Build, packaging, artifact and upstream automation | Definitions are not successful-run evidence |
 
-## 2. Directory Layout & Source Tree
+## Configuration contract
 
-```text
-kaorioshelper/
-├── core/
-│   ├── config/             # ConfigManager: atomic file persistence, schema validation, migrations
-│   ├── runtime/            # RuntimeManager: engine lifecycles, readiness tracking, health checks
-│   ├── registry/           # HookRegistry: conflict-aware hook ownership enforcement
-│   ├── status/             # StatusManager: precise multi-phase status tracking
-│   ├── logging/            # DiagnosticLogger: structured logging with secret redaction
-│   └── security/           # Permission validation, path traversal defense, symlink rejection
-├── engines/
-│   ├── hma/                # HMA-OSS integration (PMS & settings hooks for system_server)
-│   ├── pif/                # Play Integrity Fix integration (GMS & DroidGuard virtualization)
-│   ├── tee/                # TEE Simulator integration (KeyMint / Keystore2 attestation daemon)
-│   └── copg/               # COPG integration (per-app Build & CPU spoofing)
-├── zygisk/
-│   ├── dispatcher/         # Central Zygisk entry point (KaoriosHelperModule)
-│   └── native/             # Shared native hook utilities (ShadowHook, JNI helpers)
-├── cli/
-│   └── helperctl/          # Privileged command-line controller and Toolbox IPC bridge
-├── module/
-│   ├── module.prop         # Module identity metadata
-│   ├── customize.sh        # Installation and prerequisite validation script
-│   ├── post-fs-data.sh     # Early-boot preparation and verified boot property setup
-│   ├── service.sh          # Post-boot daemon startup and background monitoring
-│   ├── uninstall.sh        # Safe cleanup script
-│   └── data/               # Canonical storage contract directory
-├── docs/                   # Formal architectural specifications and audits
-├── tests/                  # Automated host and unit test suite
-├── upstreams.lock.json     # Pinned upstream commit lockfile
-└── build.py / CMakeLists   # Reproducible build automation
-```
+Default data directory: `/data/adb/modules/kaorioshelper/data/`.
 
----
+| File | Purpose | Boundary |
+|---|---|---|
+| `pif.json` | Local PIF JSON adaptation | Not native KOW `pif.prop` compatibility |
+| `hma.json` | Local HMA policy subset | Not full upstream schema parity |
+| `keybox.xml` | TEE keybox input | Structure acceptance is not cryptographic validation or active attestation |
+| `spoof.json` | Local COPG profile adaptation | Not demonstrated drop-in upstream schema compatibility |
+| `kaorios.json` | Native Kaorios configuration storage | No runtime consumer / Settings.Global mapping established |
+| Per-engine generation/LKG/pending files | Configuration revision and reload metadata | Not atomically committed as a group |
+| Runtime ACKs / `status.json` | Reported runtime state | Needs current boot/process/config identity and actual observations |
 
-## 3. Core Subsystems
+The working-tree NativeStore pins a private directory descriptor, validates ownership/modes and file types, takes a mandatory lock, uses relative no-follow operations and exclusive staging, then fsync/rename/directory fsync for each publication. Rollback shares the lock. This narrows write hazards but does **not** establish crash atomicity across config, generation, backup and pending metadata. Complete versioned snapshots and schema migrations remain MISSING. JSON parsing/type checks are a subset of complete semantic validation; native XML checking is not cryptographic validation.
 
-### 3.1 ConfigManager
-- **Contract Path**: `/data/adb/modules/kaorioshelper/data/`
-  - `pif.json`: GMS/DroidGuard spoofing properties and advanced flags.
-  - `keybox.xml`: Leaked or generated OEM Keybox containing RSA/ECDSA keys and certificates.
-  - `spoof.json`: Per-app game and device spoofing profiles and CPU configurations.
-  - `hma.json`: Package hiding rules, templates, and settings replacements.
-- **Atomic Staging & Write Flow**:
-  1. Acquire exclusive write lock (`flock` on `.lock` descriptor).
-  2. Validate payload against formal versioned JSON/XML schemas.
-  3. Reject path traversal attempts, directory symlinks, and oversized files.
-  4. Write payload to temporary file on the same filesystem (`<file>.tmp.<pid>`).
-  5. Enforce restrictive permissions (`0600`, owned by `root:root`, SELinux context `u:object_r:system_file:s0`).
-  6. Call `fsync()` to flush buffers to non-volatile storage.
-  7. Atomically rename temporary file to target (`rename(2)`).
-  8. Increment configuration generation counter (`generation.txt`).
-  9. Trigger runtime reload notification to affected engines.
-- **Fail-Safe Rollback**:
-  - Automatically maintains `.last_known_good` backups.
-  - If a runtime error occurs during reload, the engine reverts to the last known good configuration without crashing.
+`helperctl config sync` explicitly reports Settings.Global synchronization unsupported because no native-config-to-ROM mapping exists. It changes no settings. Persisting `kaorios.json` must not be presented as a Kaorios runtime backend. A control socket or patched-ROM detection backend is not established by the audited sources.
 
-### 3.2 RuntimeManager
-- Manages the lifecycle states of all four engines:
-  - `UNINITIALIZED` -> `INITIALIZING` -> `READY` -> `DEGRADED` -> `DISABLED`
-- Provides independent enable/disable toggles for each engine (`tee.enabled`, `copg.enabled`, `hma.enabled`, `pif.enabled`).
-- Orchestrates startup sequence across boot phases.
+## Execution and evidence flow
 
-### 3.3 HookRegistry
-- Maintains the authoritative mapping of system entry points to owner engines (see `docs/HOOK_OWNERSHIP.md`).
-- Enforces strict process gating:
-  - `system_server` -> HMA Engine only.
-  - `com.google.android.gms.unstable` & `com.android.vending` -> PIF Engine only.
-  - Configured user game packages -> COPG Engine only.
-  - All other processes -> Module unloads cleanly (`DLCLOSE_MODULE_LIBRARY`).
+1. Zygisk dispatch selects engines using actual native process predicates, not the simplified policy model in Python.
+2. Engines load configuration before privilege drop where implemented; HMA also stages DEX/configuration for Java startup.
+3. Android-only hook/JNI paths attempt application. HMA proxy installation alone does not establish remote-client filtering; COPG's mapped-library scan does not establish late-load coverage.
+4. Engine ACKs are intended to inform native status. Runtime generation/snapshot linkage is BLOCKED: PIF/COPG emit generation 0 and HMA emits 1, so the truthful CLI cannot converge to subsequent stored generations. Companion lifecycle, observation timing and identity validation also remain incomplete; this is not a complete unified runtime.
+5. Configuration readiness, process loaded, hook registered, initialized, observed and externally verified are distinct evidence levels. No file-presence test should be treated as hardware verification.
 
-### 3.4 StatusManager
-- Exposes structured operational state across dual dimensions:
-  1. **Persistence State**: `NOT_CONFIGURED` | `SAVED` | `INVALID_CONFIG`
-  2. **Runtime Execution State**: `APPLIED` | `PENDING_RELOAD` | `REBOOT_REQUIRED` | `ENGINE_UNAVAILABLE` | `APPLY_FAILED`
-- Eliminates false-positive reporting: an active config file on disk does not claim "applied" until the runtime engine confirms execution.
+Requirement 8 removes global boot property/settings mutations. Compatibility is not an exception to this boundary. Existing scoped hook paths are documented, not expanded; absent/forbidden functionality remains absent.
 
-### 3.5 DiagnosticLogger
-- Central structured logging channel (`/data/adb/modules/kaorioshelper/data/logs/runtime.log`).
-- **Privacy & Security Protection**:
-  - Automatically strips and redacts private key material, `<PrivateKey>`, `<Certificate>`, and authentication tokens.
-  - Caps log file size with circular rotation to prevent storage exhaustion.
+## Build and acceptance boundary
 
----
+Android scripts/CI target API 31+, ARM64 and ARM32 with a DEX build path. Host JNI is a stub; host dispatcher tests use mocks. Historical toolchain blockers, host ELF labels and fabricated maturity percentages are not current proof. Verified upstream Git identities are distinct from complete source integration, transitive pinning and license-notice closure.
 
-## 4. Unified Zygisk Dispatcher Architecture
-
-Instead of running four separate Zygisk shared libraries—which compounds dlopen overhead, consumes memory in every app process, and creates hook racing—KaoriosHelper uses a single dispatcher library:
-
-```text
-                             Android Zygote Process
-                                       │
-                      ┌────────────────┴────────────────┐
-                      ▼                                 ▼
-             preAppSpecialize()                preServerSpecialize()
-                      │                                 │
-           [Process Inspection]                         ▼
-                      │                         [system_server?]
-         ┌────────────┼────────────┐                    │
-         ▼            ▼            ▼             ┌──────┴──────┐
-      [Is GMS?]  [In spoof.json?] [Other App]   ▼             ▼
-         │            │            │          [YES]         [NO]
-         ▼            ▼            ▼            │             │
-     Dispatch:    Dispatch:      dlclose()   Dispatch:     dlclose()
-     PIF Engine  COPG Engine     (Unload)    HMA Engine    (Unload)
-```
-
-### 4.1 Process Routing Logic
-```cpp
-void KaoriosHelperModule::preAppSpecialize(zygisk::AppSpecializeArgs* args) {
-    std::string processName = getProcessName(args->nice_name);
-    
-    if (isGmsAttestationProcess(processName)) {
-        if (runtimeManager.isPifEnabled()) {
-            pifEngine.preAppSpecialize(args);
-            return;
-        }
-    } else if (runtimeManager.isCopgEnabled() && copgEngine.hasTarget(processName)) {
-        copgEngine.preAppSpecialize(args);
-        return;
-    }
-    
-    // Target is neither GMS nor a configured game/app: unload immediately
-    api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-}
-
-void KaoriosHelperModule::preServerSpecialize(zygisk::ServerSpecializeArgs* args) {
-    if (runtimeManager.isHmaEnabled()) {
-        hmaEngine.preServerSpecialize(args);
-    } else {
-        api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
-    }
-}
-```
-
----
-
-## 5. Storage Contract: Kaorios Toolbox ↔ KaoriosHelper
-
-All interaction between the Kaorios Toolbox frontend and KaoriosHelper occurs through the standardized directory:
-`/data/adb/modules/kaorioshelper/data/`
-
-| File | Format | Schema Owner | Purpose |
-|---|---|---|---|
-| `pif.json` | JSON v1 | PIF Engine | Device properties and GMS spoofing parameters |
-| `keybox.xml` | XML | TEE Engine | Keybox keys and X.509 certificates for attestation |
-| `spoof.json` | JSON v1 | COPG Engine | Per-app device profiles, Build overrides, and CPU profiles |
-| `hma.json` | JSON v2 | HMA Engine | Application hiding rules, templates, and presets |
-| `status.json` | JSON v1 | StatusManager | Real-time status reporting for all engines |
-| `control.sock` | UNIX Domain | CLI / IPC | Local privileged command & control endpoint |
-
----
-
-## 6. Dual Work Mode Compatibility
-
-Kaorios Toolbox supports two operational architectures:
-1. **ROM Integrated Mode**: Features patched directly into ROM system framework (`framework.jar`, `services.jar`). Managed via system settings and internal framework APIs.
-2. **Root + Zygisk + Helper Mode**: Features provided dynamically without modifying system partitions. KaoriosHelper is the sole runtime provider for this mode.
-
-KaoriosHelper preserves absolute independence:
-- Does not modify or rely on ROM Integrated framework hooks.
-- Detects if running on a Kaorios-patched ROM and avoids redundant hooks.
-- Communicates with Toolbox via standard root IPC and atomic files.
+The coordinating 2026-11-12 run reported 37 native cases and 59 Python tests with one skip; the coordinating session verified CI `43219029337` for `ca95c37` succeeded with Android ZIP artifact `13945066444`; final CI `43219803240` at `3045411` subsequently passed host and Android jobs per coordinating verification. No device acceptance is recorded. Magisk / KernelSU / APatch qualification, upgrade/uninstall preservation and unaffected Keystore key generation remain DEVICE_UNVERIFIED. See `FEATURE_PARITY.md`, `SOURCE_AUDIT_2.md` and `DEVICE_TEST_RESULTS.md`.
