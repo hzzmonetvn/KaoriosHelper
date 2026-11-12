@@ -19,8 +19,8 @@ class DiagnosticLogger:
 
     # Patterns matching sensitive cryptographic keys and credentials
     REDACTION_PATTERNS = [
-        (re.compile(r"<PrivateKey>.*?</PrivateKey>", re.IGNORECASE | re.DOTALL), "<PrivateKey>[REDACTED]</PrivateKey>"),
-        (re.compile(r"<Certificate>.*?</Certificate>", re.IGNORECASE | re.DOTALL), "<Certificate>[REDACTED]</Certificate>"),
+        (re.compile(r"<PrivateKey\b[^>]*>.*?</PrivateKey\s*>", re.IGNORECASE | re.DOTALL), "<PrivateKey>[REDACTED]</PrivateKey>"),
+        (re.compile(r"<Certificate\b[^>]*>.*?</Certificate\s*>", re.IGNORECASE | re.DOTALL), "<Certificate>[REDACTED]</Certificate>"),
         (re.compile(r"-----BEGIN (?:RSA |EC )?PRIVATE KEY-----.*?-----END (?:RSA |EC )?PRIVATE KEY-----", re.DOTALL), "[PRIVATE KEY REDACTED]"),
         (re.compile(r"(?i)\b(password|secret|token)\s*[:=]\s*\S+"), r"\1=[REDACTED]"),
     ]

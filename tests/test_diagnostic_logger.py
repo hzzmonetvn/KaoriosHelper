@@ -29,6 +29,11 @@ class TestDiagnosticLogger(unittest.TestCase):
         self.assertNotIn("SECRET_CERTIFICATE_DATA", redacted_cert)
         self.assertIn("<Certificate>[REDACTED]</Certificate>", redacted_cert)
 
+    def test_attribute_bearing_xml_redaction(self):
+        for tag in ("PrivateKey", "Certificate"):
+            message = f'<{tag} format="pem">SECRET_BODY</{tag}>'
+            self.assertNotIn("SECRET_BODY", self.logger.redact(message))
+
     def test_pem_private_key_redaction(self):
         pem_key = """Here is the key:
 -----BEGIN EC PRIVATE KEY-----
