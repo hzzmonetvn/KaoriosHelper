@@ -3,6 +3,24 @@
   "generated_at": "2026-11-12T00:00:00Z",
   "comment": "KaoriosHelper Pinned Upstream Repositories and Components",
   "upstreams": {
+    "disable-flag-secure": {
+      "repository": "https://github.com/LSPosed/DisableFlagSecure.git",
+      "default_branch": "main",
+      "pinned_commit": "7cf0f1fd826dad1e419cc02a2ef94c4eba591be1",
+      "pin_kind": "commit",
+      "license": "GPL-3.0 (exact grant pending)",
+      "role": "ScreenCapture portability reference only; source not integrated",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "read-only GitHub source inspection at immutable SHA",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "license_review": {
+        "status": "pending",
+        "reason": "Reference-only audit; exact grant and libxposed dependency closure pending."
+      }
+    },
     "hma-oss": {
       "repository": "https://github.com/frknkrc44/HMA-OSS.git",
       "default_branch": "master",

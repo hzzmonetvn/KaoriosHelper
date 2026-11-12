@@ -95,7 +95,14 @@ class RuntimeManager:
         if engine not in self.VALID_ENGINES:
             return False, f"Unknown engine: {engine}"
         reload_marker = self.data_dir / f"{engine}.reload_pending"
+        ack_status = self.status_mgr.get_runtime_ack_status(engine)
+        if ack_status != UnifiedStatus.APPLIED:
+            reload_marker.touch()
+            self.status_mgr.publish_status()
+            if ack_status == UnifiedStatus.APPLY_FAILED:
+                return False, f"Engine '{engine}' runtime ACK reports apply failure"
+            return False, f"Engine '{engine}' awaiting successful runtime ACK for stored/requested generation"
         if reload_marker.is_file():
             reload_marker.unlink()
         self.status_mgr.publish_status()
-        return True, f"Engine '{engine}' reloaded successfully"
+        return True, f"Engine '{engine}' runtime initialization acknowledged (device unverified)"

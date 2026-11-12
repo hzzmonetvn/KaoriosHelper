@@ -80,7 +80,21 @@ jobs:
         run: |
           python3 scripts/verify_artifacts.py
 
-      - name: Upload Module Artifact
+      - name: Record dependency and license acceptance
+        id: acceptance
+        continue-on-error: true
+        run: python3 scripts/upstreams.py acceptance
+
+      - name: Upload Diagnostic Module Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Build evidence only; release distribution requires acceptance below.
+          name: kaorioshelper-diagnostic-module
+          path: out/*.zip
+          if-no-files-found: error
+
+      - name: Upload Release-Accepted Module Artifact
+        if: steps.acceptance.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: kaorioshelper-flashable-module

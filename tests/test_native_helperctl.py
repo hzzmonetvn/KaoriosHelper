@@ -53,6 +53,22 @@ class NativeHelperCtlTest(unittest.TestCase):
             self.assertNotEqual(self.setconfig('{"schemaVersion":' + version + '}', 'kaorios').returncode, 0)
         self.assertFalse((self.data / "hma.json").exists())
 
+    def test_copg_consumed_profile_types(self):
+        for profile in [
+            {'cpu_spoof': 'yes'}, {'device_spoof': 1}, {'plt_hook': []},
+            {'android_id_spoof': None}, {'enabled': 'true'}, {'model': 2},
+            {'sdk_int': 2147483648}, {'sdk_int': -1}, {'props': {'ro.test': 2}},
+        ]:
+            payload = json.dumps({'profiles': {'com.example.game': profile}})
+            self.assertNotEqual(self.setconfig(payload, 'copg').returncode, 0, profile)
+        for payload in [{'profiles': []}, {'packages': [4]}, {'profiles': {'com.example.game': []}}]:
+            self.assertNotEqual(self.setconfig(json.dumps(payload), 'copg').returncode, 0)
+        payload = {'profiles': {'com.example.game': {'cpu_spoof': False, 'sdk_int': 35,
+                    'props': {'ro.test': 'value'}, 'future_field': {'kept': True}}},
+                   'user_extension': [1, 2]}
+        self.assertEqual(self.setconfig(json.dumps(payload), 'copg').returncode, 0)
+        self.assertEqual(json.loads((self.data / 'spoof.json').read_text()), payload)
+
     def test_preservation_rollback_and_generation(self):
         self.assertEqual(self.setconfig('{"user":{"a":1},"scope":{}}').returncode, 0)
         (self.data / "hma.verified").write_text("123")

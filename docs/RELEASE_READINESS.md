@@ -6,6 +6,12 @@
 
 Reference implementation commit: `ca95c37`. Configuration/upstream changes inspected in the working tree are not implied to be part of that commit. Coordinating session verified CI run `43219029337` for `ca95c37` **succeeded**, producing Android ZIP artifact `13945066444`. Final CI run `43219803240` at `3045411` subsequently **succeeded** for host and Android jobs, verified by the coordinating session. Device gates remain open.
 
+## Follow-up implementation checkpoint
+
+Baseline `7ae69c9` passed CI `43221053299`. The follow-up adds native ACK transport filesystem hardening, truthful Python ACK-based state, additional schema checks, and a source-free ScreenCapture capability that is disabled and unsupported. ScreenCapture is not registered as an operational engine; see `SCREENCAPTURE_AUDIT.md`.
+
+CI now separates diagnostic artifacts from release-accepted artifacts. `upstreams.py acceptance` still exits nonzero for pending license/dependency evidence, so the release artifact upload is gated off. A diagnostic ZIP is build evidence only. No physical device is connected or qualified.
+
 ## Capability gates
 
 | Gate | Status | Evidence / remaining work |

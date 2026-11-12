@@ -35,6 +35,9 @@ public:
     NativeStore(const NativeStore&) = delete;
     static void fail(const char *message) { throw std::runtime_error(message); }
     void check(const std::string &name) {
+        if (name.empty() || name == "." || name == ".." ||
+            name.find('/') != std::string::npos || name.find('\0') != std::string::npos)
+            fail("Invalid configuration leaf name");
         struct stat s{};
         if (fstatat(dir_, name.c_str(), &s, AT_SYMLINK_NOFOLLOW)) {
             if (errno == ENOENT) return;
@@ -111,6 +114,28 @@ inline bool validateNativeJson(const std::string &engine, const std::string &tex
             if (!cpu.is_object()) return false;
             for (const auto *k : {"blacklist", "cpu_only_packages"})
                 if (cpu.contains(k) && !cpu[k].is_array()) return false;
+        }
+        for (const auto *section : {"profiles", "packages"}) {
+            if (!j.contains(section)) continue;
+            const auto &profiles = j[section];
+            if (std::string(section) == "packages" && profiles.is_array()) {
+                for (const auto &pkg : profiles) if (!pkg.is_string()) return false;
+                continue;
+            }
+            if (!profiles.is_object()) return false;
+            for (const auto &profile : profiles) {
+                if (!profile.is_object()) return false;
+                for (const auto *flag : {"enabled", "device_spoof", "cpu_spoof", "plt_hook", "android_id_spoof"})
+                    if (profile.contains(flag) && !profile[flag].is_boolean()) return false;
+                for (const auto *field : {"model", "brand", "manufacturer", "device", "product", "fingerprint", "release", "serial", "android_id"})
+                    if (profile.contains(field) && !profile[field].is_string()) return false;
+                if (profile.contains("sdk_int") && (!profile["sdk_int"].is_number_integer() ||
+                    profile["sdk_int"] < 0 || profile["sdk_int"] > std::numeric_limits<int>::max())) return false;
+                if (profile.contains("props")) {
+                    if (!profile["props"].is_object()) return false;
+                    for (const auto &value : profile["props"]) if (!value.is_string()) return false;
+                }
+            }
         }
         for (auto it=j.begin(); it!=j.end(); ++it) {
             const auto &key=it.key();

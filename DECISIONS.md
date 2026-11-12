@@ -1,5 +1,15 @@
 # Native configuration decisions
 
+## Follow-up audit and implementation — 2026-11-12
+
+- Harden ACK transport with descriptor-relative no-follow filesystem operations, bounded regular-file reads, serialized exclusive staging and checked durable publication. Retain the compatibility alias but do not claim the pair of renames is crash-atomic.
+- Require Python management status/reload to consume successful exact-generation ACK evidence instead of treating configuration presence or a removed pending marker as application success. Device verification remains false.
+- Add ScreenCapture as an unsupported, disabled source-free capability declaration, not a registered no-op engine. Pin the audited upstream separately; no libxposed implementation is copied or purported to work under Zygisk.
+- Separate diagnostic ZIP uploads from release-accepted uploads. Retain fail-closed dependency/license acceptance rather than changing pending reviews to accepted without evidence.
+- Preserve existing dispatcher failure containment; server handling becomes true only after a successful pre-specialization callback.
+- Follow-up local verification: 69 Python tests run, one skipped; CTest passed with 38 native cases. No Android hardware execution occurred.
+
+
 ## Implemented choices
 
 - Extend the existing native `HelperCtl` interface rather than introduce a daemon or device-side Python dependency.

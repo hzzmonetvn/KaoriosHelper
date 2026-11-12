@@ -19,6 +19,7 @@
 #include "copg_engine.hpp"
 #include "ack_protocol.hpp"
 #include <sys/stat.h>
+#include <sys/wait.h>
 
 namespace fs = std::filesystem;
 
@@ -588,6 +589,84 @@ void test_ack_unprivileged_write_rejected(const std::string &dir) {
     std::cout << "  [PASS] test_ack_unprivileged_write_rejected" << std::endl;
 }
 
+void test_ack_transport_filesystem(const std::string &dir) {
+    std::string runtime = dir + "/ack_transport";
+    kaorios::RuntimeAck ack;
+    ack.engine = "pif";
+    ack.processName = "com.google.android.gms.unstable";
+    ack.pid = getpid();
+    ack.uid = getuid();
+    kaorios::RuntimeAck parsed;
+    assert(kaorios::writeRuntimeAckDirect(runtime, ack));
+    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
+    struct stat primary{}, compat{};
+    assert(stat((runtime + "/pif.ack.json").c_str(), &primary) == 0);
+    assert(stat((runtime + "/pif.json").c_str(), &compat) == 0);
+    assert(primary.st_ino == compat.st_ino);
+    fs::remove(runtime + "/pif.ack.json");
+    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
+    fs::create_symlink(runtime + "/pif.json", runtime + "/pif.ack.json");
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    fs::remove(runtime + "/pif.ack.json");
+    assert(mkfifo((runtime + "/pif.ack.json").c_str(), 0600) == 0);
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    fs::remove(runtime + "/pif.ack.json");
+    fs::create_directory(runtime + "/pif.ack.json");
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    fs::remove(runtime + "/pif.ack.json");
+    assert(kaorios::writeRuntimeAckDirect(runtime, ack));
+    chmod((runtime + "/pif.ack.json").c_str(), 0666);
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    chmod((runtime + "/pif.ack.json").c_str(), 0600);
+    std::ofstream(runtime + "/pif.ack.json") << std::string(65537, 'x');
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    assert(kaorios::writeRuntimeAckDirect(runtime, ack));
+    assert(!kaorios::readRuntimeAck(runtime, "../pif", parsed));
+    fs::create_directory_symlink(runtime, dir + "/ack_link");
+    assert(!kaorios::writeRuntimeAckDirect(dir + "/ack_link", ack));
+    assert(!kaorios::readRuntimeAck(dir + "/ack_link", "pif", parsed));
+    assert(!kaorios::writeRuntimeAckDirect(dir + "/ack_link/child", ack));
+    chmod(runtime.c_str(), 0777);
+    assert(!kaorios::writeRuntimeAckDirect(runtime, ack));
+    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    chmod(runtime.c_str(), 0755);
+    // A legacy predictable staging path must never be opened or truncated.
+    std::string victim = dir + "/ack_victim";
+    std::ofstream(victim) << "unchanged";
+    fs::create_symlink(victim, runtime + "/pif.ack.json.tmp." + std::to_string(getpid()));
+    assert(kaorios::writeRuntimeAckDirect(runtime, ack));
+    std::ifstream input(victim);
+    std::string content;
+    input >> content;
+    assert(content == "unchanged");
+    pid_t writers[4];
+    for (int i = 0; i < 4; ++i) {
+        writers[i] = fork();
+        assert(writers[i] >= 0);
+        if (writers[i] == 0) {
+            ack.detail = std::to_string(i);
+            for (int n = 0; n < 20; ++n) {
+                if (!kaorios::writeRuntimeAckDirect(runtime, ack)) _exit(1);
+            }
+            _exit(0);
+        }
+    }
+    for (pid_t writer : writers) {
+        int status = 0;
+        assert(waitpid(writer, &status, 0) == writer);
+        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
+    assert(stat((runtime + "/pif.ack.json").c_str(), &primary) == 0);
+    assert(stat((runtime + "/pif.json").c_str(), &compat) == 0);
+    assert(primary.st_ino == compat.st_ino);
+    ack.detail.assign(65537, 'x');
+    assert(!kaorios::writeRuntimeAckDirect(runtime, ack));
+    fs::remove(dir + "/ack_link");
+    fs::remove_all(runtime);
+    fs::remove(victim);
+}
+
 void test_ack_stale_discarded(const std::string &dir) {
     std::cout << "  [RUN] test_ack_stale_discarded" << std::endl;
     std::string runtime_dir = dir + "/runtime";
@@ -725,10 +804,11 @@ int main() {
 
     try {
         std::cout << "\n========================================================" << std::endl;
-        std::cout << "      KAORIOSHELPER NATIVE TEST SUITE (36 TESTS)        " << std::endl;
+        std::cout << "      KAORIOSHELPER NATIVE TEST SUITE (38 TESTS)        " << std::endl;
         std::cout << "========================================================" << std::endl;
 
         std::cout << "\n[SUITE 1/7] HMA Engine Tests (5 tests):" << std::endl;
+        test_ack_transport_filesystem(temp_dir);
         test_hma_positive(temp_dir);
         test_hma_negative(temp_dir);
         test_hma_malformed(temp_dir);
@@ -780,7 +860,7 @@ int main() {
         test_unsupported_arch_reported(temp_dir);
 
         std::cout << "\n========================================================" << std::endl;
-        std::cout << "    ALL 37 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
+        std::cout << "    ALL 38 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
         std::cout << "========================================================" << std::endl;
     } catch (const std::exception &e) {
         std::cerr << "Exception: " << e.what() << std::endl;

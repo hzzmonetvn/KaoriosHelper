@@ -10,8 +10,11 @@
 
 #include <string>
 #include <cstdint>
+#include <atomic>
+#include <cerrno>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include "../third_party/json/nlohmann/json.hpp"
@@ -153,62 +156,108 @@ inline bool validateRuntimeAck(const RuntimeAck &ack, std::string &reason) {
     return true;
 }
 
+inline int openRuntimeAckDirectory(const std::string &path, bool create) {
+    // Walk every component without following symlinks, then pin the directory.
+    int fd = open(path.size() && path[0] == '/' ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    size_t start = 0;
+    while (start < path.size()) {
+        size_t end = path.find('/', start);
+        if (end == std::string::npos) end = path.size();
+        std::string part = path.substr(start, end - start);
+        start = end + 1;
+        if (part.empty() || part == ".") continue;
+        if (part == "..") { close(fd); return -1; }
+        if (create && end == path.size() && mkdirat(fd, part.c_str(), 0755) != 0 && errno != EEXIST) {
+            close(fd); return -1;
+        }
+        int next = openat(fd, part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        close(fd);
+        if (next < 0) return -1;
+        fd = next;
+    }
+    struct stat st{};
+    if (path.empty() || fstat(fd, &st) != 0 || st.st_uid != geteuid() || (st.st_mode & 0022)) {
+        close(fd); return -1;
+    }
+    return fd;
+}
+
 inline bool writeRuntimeAckDirect(const std::string &runtime_dir, const RuntimeAck &ack) {
     std::string err;
     if (!validateRuntimeAck(ack, err)) {
         return false;
     }
 
-    mkdir(runtime_dir.c_str(), 0755);
-
-    std::string target_file = runtime_dir + "/" + ack.engine + ".ack.json";
-    std::string compat_file = runtime_dir + "/" + ack.engine + ".json";
-    std::string tmp_file = target_file + ".tmp." + std::to_string(getpid());
-
     std::string serialized = ack.toJson().dump(2);
-
-    int fd = open(tmp_file.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0600);
-    if (fd < 0) return false;
-
-    ssize_t written = write(fd, serialized.data(), serialized.size());
-    close(fd);
-
-    if (written != static_cast<ssize_t>(serialized.size())) {
-        unlink(tmp_file.c_str());
-        return false;
+    if (serialized.empty() || serialized.size() > 65536) return false;
+    int dir = openRuntimeAckDirectory(runtime_dir, true);
+    if (dir < 0) return false;
+    int locked;
+    do { locked = flock(dir, LOCK_EX); } while (locked != 0 && errno == EINTR);
+    if (locked != 0) { close(dir); return false; }
+    std::string target = ack.engine + ".ack.json";
+    std::string compat = ack.engine + ".json";
+    static std::atomic<uint64_t> sequence{0};
+    std::string staging;
+    int fd = -1;
+    for (int attempt = 0; attempt < 128; ++attempt) {
+        staging = target + ".tmp." + std::to_string(getpid()) + "." + std::to_string(sequence.fetch_add(1));
+        fd = openat(dir, staging.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW | O_CLOEXEC, 0600);
+        if (fd >= 0 || errno != EEXIST) break;
     }
-
-    if (rename(tmp_file.c_str(), target_file.c_str()) != 0) {
-        unlink(tmp_file.c_str());
-        return false;
+    if (fd < 0) { close(dir); return false; }
+    size_t offset = 0;
+    while (offset < serialized.size()) {
+        ssize_t n = write(fd, serialized.data() + offset, serialized.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        offset += static_cast<size_t>(n);
     }
-
-    // Also mirror to compat file
-    unlink(compat_file.c_str());
-    link(target_file.c_str(), compat_file.c_str());
-
-    return true;
+    bool ok = offset == serialized.size() && fsync(fd) == 0;
+    if (close(fd) != 0) ok = false;
+    // Link this exact staged inode for compatibility, rather than racing another writer's target.
+    std::string compat_staging = staging + ".compat";
+    if (ok) ok = linkat(dir, staging.c_str(), dir, compat_staging.c_str(), 0) == 0;
+    if (ok) ok = renameat(dir, staging.c_str(), dir, target.c_str()) == 0;
+    if (ok) ok = renameat(dir, compat_staging.c_str(), dir, compat.c_str()) == 0;
+    if (ok) ok = fsync(dir) == 0;
+    unlinkat(dir, staging.c_str(), 0);
+    unlinkat(dir, compat_staging.c_str(), 0);
+    close(dir);
+    return ok;
 }
 
 inline bool readRuntimeAck(const std::string &runtime_dir, const std::string &engine, RuntimeAck &out) {
-    std::string target_file = runtime_dir + "/" + engine + ".ack.json";
-    if (access(target_file.c_str(), R_OK) != 0) {
-        target_file = runtime_dir + "/" + engine + ".json";
-    }
-    int fd = open(target_file.c_str(), O_RDONLY);
+    if (engine != "hma" && engine != "pif" && engine != "tee" && engine != "copg") return false;
+    int dir = openRuntimeAckDirectory(runtime_dir, false);
+    if (dir < 0) return false;
+    int flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC;
+    int fd = openat(dir, (engine + ".ack.json").c_str(), flags);
+    if (fd < 0 && errno == ENOENT) fd = openat(dir, (engine + ".json").c_str(), flags);
+    close(dir);
     if (fd < 0) return false;
 
     struct stat st{};
-    if (fstat(fd, &st) != 0 || st.st_size <= 0 || st.st_size > 65536) {
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != geteuid() ||
+        (st.st_mode & 0022) || st.st_size <= 0 || st.st_size > 65536) {
         close(fd);
         return false;
     }
 
-    std::string buf(st.st_size, '\0');
-    ssize_t n = read(fd, &buf[0], st.st_size);
+    std::string buf(static_cast<size_t>(st.st_size), '\0');
+    size_t offset = 0;
+    while (offset < buf.size()) {
+        ssize_t n = read(fd, &buf[offset], buf.size() - offset);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        offset += static_cast<size_t>(n);
+    }
+    char extra;
+    ssize_t trailing;
+    do { trailing = read(fd, &extra, 1); } while (trailing < 0 && errno == EINTR);
     close(fd);
-
-    if (n != st.st_size) return false;
+    if (offset != buf.size() || trailing != 0) return false;
 
     auto j = nlohmann::json::parse(buf, nullptr, false);
     if (j.is_discarded() || !j.is_object()) return false;

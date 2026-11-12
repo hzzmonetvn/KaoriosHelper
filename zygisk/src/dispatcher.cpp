@@ -119,9 +119,9 @@ void KaoriosDispatcher::preServerSpecialize(zygisk::ServerSpecializeArgs *args) 
     for (auto &engine : engines_) {
         try {
             if (!failed(engine.get()) && engine->isEnabled() && engine->shouldHandleServer()) {
-                handling_server_ = true;
                 engine->preServerSpecialize(args);
                 active_server_engines_.push_back(engine.get());
+                handling_server_ = true;
             }
         } catch (...) {
             recordFailure(engine.get());
