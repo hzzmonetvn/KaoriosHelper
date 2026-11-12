@@ -1,0 +1,27 @@
+name: Compatibility
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Immutable provenance validation
+        run: python3 scripts/upstreams.py validate
+      - name: Offline regression suite
+        run: PYTHONPATH=. python3 -m unittest discover -s tests -p 'test_*.py'
+  dependency-license-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fail closed on incomplete dependency or license acceptance
+        run: python3 scripts/upstreams.py acceptance

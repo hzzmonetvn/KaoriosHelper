@@ -1,0 +1,43 @@
+name: Propose upstream lock update
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 7 * * 1'
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+concurrency:
+  group: upstream-lock-sync
+  cancel-in-progress: false
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/upstreams.py sync
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upstream-sync-comparison
+          path: upstream-report.json
+          if-no-files-found: error
+      - name: Open lockfile-only proposal
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- upstreams.lock.json; then exit 0; fi
+          branch="automation/upstream-lock-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git config user.name github-actions
+          git config user.email github-actions@users.noreply.github.com
+          git add -- upstreams.lock.json
+          git commit -m "Propose reviewed upstream snapshot candidates"
+          git push origin "$branch"
+          gh pr create --base "$GITHUB_REF_NAME" --head "$branch" --title "Review upstream lock candidates" --body "Lockfile metadata only. Engines are unchanged. Compare artifact: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID . License/dependency acceptance remains pending; no automatic merge. Run the Compatibility workflow on this branch: token-created PRs do not trigger pull_request workflows."
+          gh workflow run compatibility.yml --ref "$branch"

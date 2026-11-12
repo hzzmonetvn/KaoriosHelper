@@ -1,7 +1,6 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "version": "1.0.0",
-  "generated_at": "2026-10-24T16:20:00Z",
+  "version": "2.0.0",
+  "generated_at": "2026-11-12T00:00:00Z",
   "comment": "KaoriosHelper Pinned Upstream Repositories and Components",
   "upstreams": {
     "hma-oss": {
@@ -9,10 +8,8 @@
       "default_branch": "master",
       "pinned_tag": "oss-173",
       "pinned_commit": "1fe86ce2b4a6f21197e6e92d15e054d609b7d77c",
-      "license": "AGPL-3.0-only",
-      "spdx_id": "AGPL-3.0-only",
+      "license": "AGPL-3.0 (family only; exact grant pending)",
       "role": "HMA Engine: Application visibility, package manager filtering, installer source spoofing, and settings replacement",
-      "verified_integrity": "verified",
       "submodules": {
         "external/AndroidVMTools": {
           "repository": "https://github.com/aerath-stuff/AndroidVMTools.git",
@@ -31,6 +28,19 @@
           "pinned_commit": "c0d8fa431e9a747dd974b8f8c02695dc3ae38b6f",
           "license": "MIT / GPL-2.0-with-classpath-exception"
         }
+      },
+      "pin_kind": "tag",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "git object and selected source inspection; audit baseline 2026-11-12",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "tag_commit": "1fe86ce2b4a6f21197e6e92d15e054d609b7d77c",
+      "license_review": {
+        "status": "pending",
+        "observed_family": "AGPL-3.0",
+        "reason": "Exact grant and dependency notices require review; legacy SPDX label is not acceptance."
       }
     },
     "play-integrity-fork": {
@@ -38,11 +48,8 @@
       "default_branch": "master",
       "pinned_tag": "v18",
       "pinned_commit": "23ec56c2440c4fd1a5e893a23ef7861d6366a828",
-      "release_commit_v18": "6d2307ff5037519982205e66bda1132d0d8cc4da",
-      "license": "GPL-3.0-only",
-      "spdx_id": "GPL-3.0-only",
+      "license": "GPL-3.0 (family only; exact grant pending)",
       "role": "PIF Engine: GMS and DroidGuard property configuration, target process selection, and system property filtering",
-      "verified_integrity": "verified",
       "third_party": {
         "shadowhook": {
           "vendor": "ByteDance",
@@ -52,6 +59,19 @@
           "vendor": "Niels Lohmann",
           "license": "MIT"
         }
+      },
+      "pin_kind": "snapshot",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "git object and selected source inspection; audit baseline 2026-11-12",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "tag_commit": "6d2307ff5037519982205e66bda1132d0d8cc4da",
+      "license_review": {
+        "status": "pending",
+        "observed_family": "GPL-3.0",
+        "reason": "Exact grant and dependency notices require review; legacy SPDX label is not acceptance."
       }
     },
     "always-strong": {
@@ -59,14 +79,24 @@
       "default_branch": "main",
       "pinned_tag": "v1.0.5",
       "pinned_commit": "95ccd2add35a2db2721b9e5111f13917f7dbac0c",
-      "release_commit_v1.0.5": "72309a7c5117f28f44a1cd72b89ff1c5302208bf",
-      "license": "GPL-3.0-only",
-      "spdx_id": "GPL-3.0-only",
+      "license": "GPL-3.0 (family only; exact grant pending)",
       "role": "Integration Architecture Reference: Coordination of PIF and Keystore Attestation engines, package watcher, and conflict detection",
-      "verified_integrity": "verified",
       "native_tools": {
         "watcher": "native/watcher (Rust)",
         "asfetch": "native/asfetch (Rust)"
+      },
+      "pin_kind": "snapshot",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "git object and selected source inspection; audit baseline 2026-11-12",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "tag_commit": "72309a7c5117f28f44a1cd72b89ff1c5302208bf",
+      "license_review": {
+        "status": "pending",
+        "observed_family": "GPL-3.0",
+        "reason": "Exact grant and dependency notices require review; legacy SPDX label is not acceptance."
       }
     },
     "tee-simulator-rs": {
@@ -74,10 +104,29 @@
       "default_branch": "master",
       "pinned_tag": "v6.0.1-307",
       "pinned_commit": "6d241e56d6e8146cd67ed4ac3dadc9c632969549",
-      "license": "GPL-3.0-only",
-      "spdx_id": "GPL-3.0-only",
+      "license": "GPL-3.0 (family only; exact grant pending)",
       "role": "TEE Engine: Android Keystore2 / KeyMint hardware attestation simulation using keybox certificate chains",
-      "verified_integrity": "verified"
+      "pin_kind": "tag",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "git object and selected source inspection; audit baseline 2026-11-12",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "tag_commit": "6d241e56d6e8146cd67ed4ac3dadc9c632969549",
+      "license_review": {
+        "status": "pending",
+        "observed_family": "GPL-3.0",
+        "reason": "Exact grant and dependency notices require review; legacy SPDX label is not acceptance."
+      },
+      "submodules": {
+        "app/src/main/cpp/external/LSPlt": {
+          "repository": "https://github.com/JingMatrix/LSPlt.git",
+          "pinned_commit": "3e29437f037cb7d2b9fbb459dcf162f6b8d1d926",
+          "license": "UNKNOWN",
+          "evidence": "Parent gitlink and .gitmodules verified; dependency contents/license not independently fetched."
+        }
+      }
     },
     "copg": {
       "repository": "https://github.com/AlirezaParsi/COPG.git",
@@ -85,14 +134,57 @@
       "pinned_commit": "07c6482eaf83bf93697e88648491abf9053121c6",
       "version_note": "Historical COPG 5.1.1 source release containing complete native C++ implementation (src/spoof_module.cpp and src/unified_controller.cpp). Subsequent commits deleted src/ for closed-source monetization.",
       "license": "Apache-2.0",
-      "spdx_id": "Apache-2.0",
       "role": "COPG Engine: Per-app device profile spoofing, Build property overrides, CPU info spoofing, and game-specific customization",
-      "verified_integrity": "verified",
       "bundled_licenses": {
         "nlohmann-json": "MIT",
         "zygisk.hpp": "ISC",
         "atexit.cpp": "BSD-2-Clause"
+      },
+      "pin_kind": "snapshot",
+      "evidence": {
+        "commit_object": "verified",
+        "method": "git object and selected source inspection; audit baseline 2026-11-12",
+        "runtime": "unverified",
+        "dependency_closure": "incomplete"
+      },
+      "license_review": {
+        "status": "pending",
+        "observed_family": "Apache-2.0",
+        "reason": "Exact grant and dependency notices require review; legacy SPDX label is not acceptance."
       }
+    },
+    "kow-inject": {
+      "repository": "https://github.com/KOWX712/PlayIntegrityFix.git",
+      "default_branch": "inject_s",
+      "pinned_tag": "v4.9-inject-s",
+      "pinned_commit": "1138c6f3cebb70c00ec5573911cee745134a3e6d",
+      "tag_commit": "1138c6f3cebb70c00ec5573911cee745134a3e6d",
+      "pin_kind": "tag",
+      "license": "GPL-3.0 (family only)",
+      "license_review": {
+        "status": "pending",
+        "observed_family": "GPL-3.0",
+        "reason": "Exact grant and transitive notices require review."
+      },
+      "configuration": {
+        "format": "pif.prop",
+        "syntax": "key=value; not JSON",
+        "evidence": "README.md Variety section at pinned release",
+        "local_compatibility": "not established; local JSON adapter is distinct"
+      },
+      "evidence": {
+        "commit_object": "verified",
+        "tag_resolution": "verified",
+        "dependency_closure": "incomplete",
+        "runtime": "unverified",
+        "selection": "AlwaysStrong module-variants/inject/build.conf:12-14 selects KOWX712/PlayIntegrityFix v4.9-inject-s"
+      },
+      "role": "Distinct KOW inject release reference; not PlayIntegrityFork"
     }
-  }
+  },
+  "evidence_limits": [
+    "Git objects and selected license texts inspected; no target code executed.",
+    "No runtime parity, release asset correspondence, or complete transitive dependency/license closure established.",
+    "GPL family text does not establish only versus or-later grants."
+  ]
 }
