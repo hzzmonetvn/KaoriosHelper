@@ -51,6 +51,7 @@ jobs:
           packages: 'build-tools;34.0.0 platforms;android-34'
 
       - name: Set up Android NDK
+        id: ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26b
@@ -61,6 +62,8 @@ jobs:
           bash dex/build_dex.sh
 
       - name: Cross-Compile Native Multi-ABI Libraries & CLI
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |
           chmod +x scripts/build_android.sh
           bash scripts/build_android.sh all
