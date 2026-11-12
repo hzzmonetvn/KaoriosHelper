@@ -84,7 +84,18 @@ def verify_zip(zip_path: Path):
         raise FileNotFoundError(f"Module ZIP missing at {zip_path}")
 
     with zipfile.ZipFile(zip_path, "r") as zf:
-        namelist = set(zf.namelist())
+        names = zf.namelist()
+        namelist = set(names)
+        if len(names) != len(namelist):
+            raise ValueError("Duplicate member in module ZIP")
+        for entry in zf.infolist():
+            name = entry.filename
+            parts = name.rstrip("/").split("/")
+            if (not name or name.startswith("/") or "\\" in name
+                    or any(part in ("", ".", "..") for part in parts)):
+                raise ValueError("Unsafe path in module ZIP")
+            if ((entry.external_attr >> 16) & 0o170000) == 0o120000:
+                raise ValueError("Symbolic link in module ZIP")
         required = [
             "module.prop",
             "customize.sh",
