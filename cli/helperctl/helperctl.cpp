@@ -664,7 +664,18 @@ public:
     int cmdVersion(bool json_mode) {
         std::string ver = getVersion();
         if (json_mode) {
-            std::cout << "{\"moduleId\": \"kaorioshelper\", \"version\": \"" << ver << "\"}\n";
+            nlohmann::json result = {
+                {"moduleId", "kaorioshelper"}, {"version", ver},
+                {"protocolVersion", 1}, {"statusSchemaVersion", 1},
+                {"capabilities", {
+                    {"configSet", true}, {"configValidate", true},
+                    {"configRollback", true}, {"settingsGlobalSync", false},
+                    {"atomicMultiFileSnapshot", false}, {"redactedConfigRead", false},
+                    {"structuredMutationErrors", false}, {"deviceVerification", false},
+                    {"screenCapture", false}
+                }}
+            };
+            std::cout << result.dump() << "\n";
         } else {
             std::cout << "KaoriosHelper " << ver << "\n";
         }

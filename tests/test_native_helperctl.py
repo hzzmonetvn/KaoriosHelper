@@ -169,6 +169,18 @@ class NativeHelperCtlTest(unittest.TestCase):
         link.symlink_to(self.source('{}'))
         self.assertNotEqual(self.runctl('config', 'validate', 'hma', str(link)).returncode, 0)
 
+    def test_version_negotiates_actual_capabilities(self):
+        result = self.runctl('version', '--json')
+        self.assertEqual(result.returncode, 0)
+        version = json.loads(result.stdout)
+        self.assertEqual(version['moduleId'], 'kaorioshelper')
+        self.assertEqual(version['protocolVersion'], 1)
+        self.assertEqual(version['statusSchemaVersion'], 1)
+        self.assertTrue(version['capabilities']['configSet'])
+        for key in ('settingsGlobalSync', 'atomicMultiFileSnapshot', 'redactedConfigRead',
+                    'structuredMutationErrors', 'deviceVerification', 'screenCapture'):
+            self.assertFalse(version['capabilities'][key])
+
     def test_kaorios_and_explicit_unsupported_sync(self):
         self.assertNotEqual(self.runctl('config', 'validate', 'unknown', self.source('{}')).returncode, 0)
         self.assertEqual(self.setconfig('{"user":true}', 'kaorios').returncode, 0)
