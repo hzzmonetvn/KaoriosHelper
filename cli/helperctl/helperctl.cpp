@@ -5,6 +5,7 @@
  */
 
 #include <iostream>
+#include "../../core/config/native_store.hpp"
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -137,7 +138,7 @@ public:
             uint64_t gen = 0;
             if (f >> gen) return gen;
         }
-        return getStoredGeneration(engine);
+        return 0; // Absence is not evidence that a reload was requested.
     }
 
     void setRequestedGeneration(const std::string &engine, uint64_t gen) {
@@ -196,8 +197,7 @@ public:
         if (stat((data_dir_ + "/hma.json").c_str(), &st) == 0 && st.st_size > 0) {
             std::ifstream f(data_dir_ + "/hma.json");
             std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            auto j = nlohmann::json::parse(content, nullptr, false);
-            hma.configValid = (!j.is_discarded() && j.is_object());
+            hma.configValid = kaorios::validateNativeJson("hma", content);
             if (!hma.configValid) hma.lastError = "hma.json malformed JSON syntax";
         } else {
             hma.configValid = false;
@@ -282,8 +282,7 @@ public:
         if (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0) {
             std::ifstream f(data_dir_ + "/pif.json");
             std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            auto j = nlohmann::json::parse(content, nullptr, false);
-            pif.configValid = (!j.is_discarded() && j.is_object());
+            pif.configValid = kaorios::validateNativeJson("pif", content);
             if (!pif.configValid) pif.lastError = "pif.json malformed JSON syntax";
         } else {
             pif.configValid = false;
@@ -410,8 +409,7 @@ public:
         if (stat(copg_file.c_str(), &st) == 0 && st.st_size > 0) {
             std::ifstream f(copg_file);
             std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            auto j = nlohmann::json::parse(content, nullptr, false);
-            copg.configValid = (!j.is_discarded() && j.is_object());
+            copg.configValid = kaorios::validateNativeJson("copg", content);
             if (!copg.configValid) copg.lastError = "spoof.json malformed JSON syntax";
         } else {
             copg.configValid = false;
@@ -475,6 +473,37 @@ public:
         }
         res["copg"] = copg;
 
+        // Runtime evidence is not external device verification. Legacy marker files
+        // deliberately confer no trust. Only current, successful ACKs imply progress.
+        for (auto &[name, s] : res) {
+            s.deviceVerified = false;
+            s.lastVerifiedTimestamp = 0;
+            kaorios::RuntimeAck ack;
+            bool hasAck = kaorios::readRuntimeAck(data_dir_ + "/runtime", name, ack);
+            bool current = hasAck && ack.engine == name && ack.configGeneration == s.storedGeneration &&
+                ack.configGeneration == s.requestedGeneration && s.storedGeneration > 0;
+            using E = kaorios::AckEventType;
+            bool initialized = current && ack.initResult == 0 && ack.errorCode == 0 &&
+                (ack.eventType == E::HOOK_INITIALIZED || ack.eventType == E::HOOK_OBSERVED);
+            s.processLoaded = current && ack.eventType != E::APPLY_FAILED && ack.initResult == 0 && ack.errorCode == 0;
+            s.hookRegistered = s.processLoaded && (ack.eventType == E::HOOK_REGISTERED || initialized);
+            s.runtimeObserved = initialized && ack.eventType == E::HOOK_OBSERVED;
+            s.appliedGeneration = initialized ? ack.configGeneration : 0;
+            if (name == "tee" || !s.enabled || !s.configValid || !s.runtimeAvailable) continue;
+            s.hookInitialized = initialized ? "INITIALIZED" : "NOT_INITIALIZED";
+            s.pendingReload = !initialized;
+            if (current && (ack.eventType == E::APPLY_FAILED || ack.initResult != 0 || ack.errorCode != 0)) {
+                s.status = "FAILED"; s.hookInitialized = "FAILED"; s.lastError = ack.detail;
+            } else if (initialized) {
+                s.status = s.runtimeObserved ? "DEVICE_UNVERIFIED" : "READY"; s.lastError.clear();
+            } else {
+                s.status = "PENDING_RELOAD";
+                s.details = hasAck && ack.engine == name &&
+                    (ack.configGeneration != s.storedGeneration || ack.configGeneration != s.requestedGeneration)
+                    ? "Runtime snapshot-generation acknowledgement unsupported by current engine"
+                    : "Awaiting successful runtime ACK for stored/requested generation";
+            }
+        }
         return res;
     }
 
@@ -626,55 +655,10 @@ public:
             return 0;
         }
 
-        auto engines = getEngineStatuses();
-        int failures = 0;
-
         for (const auto &eng : target_engines) {
-            const auto &status = engines[eng];
-            if (eng == "hma") {
-                if (!status.enabled) {
-                    std::cout << "[FAIL] HMA verification failed: Engine is disabled.\n";
-                    failures++;
-                } else if (!status.configValid) {
-                    std::cout << "[FAIL] HMA verification failed: Configuration is invalid or missing.\n";
-                    failures++;
-                } else if (!status.runtimeAvailable) {
-                    std::cout << "[FAIL] HMA verification failed: classes.dex runtime payload is missing.\n";
-                    failures++;
-                } else {
-                    setVerified("hma", true);
-                    std::cout << "[PASS] HMA engine external verification succeeded on device.\n";
-                }
-            } else if (eng == "pif") {
-                if (!status.enabled) {
-                    std::cout << "[FAIL] PIF verification failed: Engine is disabled.\n";
-                    failures++;
-                } else if (!status.configValid) {
-                    std::cout << "[FAIL] PIF verification failed: Configuration is invalid or missing.\n";
-                    failures++;
-                } else {
-                    setVerified("pif", true);
-                    std::cout << "[PASS] PIF engine external verification succeeded on device.\n";
-                }
-            } else if (eng == "copg") {
-                if (!status.enabled) {
-                    std::cout << "[FAIL] COPG verification failed: Engine is disabled.\n";
-                    failures++;
-                } else if (!status.configValid) {
-                    std::cout << "[FAIL] COPG verification failed: Configuration is invalid or missing.\n";
-                    failures++;
-                } else {
-                    setVerified("copg", true);
-                    std::cout << "[PASS] COPG engine external verification succeeded on device.\n";
-                }
-            } else if (eng == "tee") {
-                std::cout << "[FAIL] TEE verification failed: Keystore2 system daemon interception runtime is not bundled (INCOMPLETE_RUNTIME).\n";
-                failures++;
-            }
+            std::cout << "[NOT_VERIFIED] " << eng << ": no external device probe provider configured. Local readiness is not device proof.\n";
         }
-
-        updateStatusJson();
-        return failures > 0 ? 1 : 0;
+        return 1;
     }
 
     int cmdVersion(bool json_mode) {
@@ -734,71 +718,21 @@ public:
             return 1;
         }
 
-        bool all_reloaded = true;
-        for (const auto &eng : target_engines) {
-            // 1. Write reload_pending marker
-            std::ofstream(data_dir_ + "/" + eng + ".reload_pending").close();
-
-            // 2. Increment requestedGeneration (do not advance appliedGeneration)
-            uint64_t req_gen = getRequestedGeneration(eng) + 1;
-            setRequestedGeneration(eng, req_gen);
-
-            // 3. Poll for engine acknowledgement matching requested generation
-            bool reloaded = false;
-            for (int attempt = 0; attempt < 20; ++attempt) {
-                kaorios::RuntimeAck ack;
-                if (kaorios::readRuntimeAck(data_dir_ + "/runtime", eng, ack)) {
-                    if (ack.configGeneration >= req_gen) {
-                        reloaded = true;
-                        std::error_code ec;
-                        fs::remove(data_dir_ + "/" + eng + ".reload_pending", ec);
-                        break;
-                    }
-                }
-                usleep(100000); // 100ms
+        try {
+            kaorios::NativeStore store(data_dir_);
+            for (const auto &eng : target_engines) {
+                uint64_t gen = getStoredGeneration(eng);
+                store.write(eng + ".requested_gen", std::to_string(gen) + "\n");
+                store.write(eng + ".reload_pending", "");
+                store.remove(eng + ".verified");
+                std::cout << "PENDING: Engine '" << eng << "' reload requested (generation " << gen << ").\n";
             }
-
-            if (reloaded) {
-                std::cout << "SUCCESS: Engine '" << eng << "' reloaded to generation " << req_gen << ".\n";
-            } else {
-                std::cout << "PENDING: Engine '" << eng << "' reload requested (generation " << req_gen << "), awaiting target process restart/reload.\n";
-                all_reloaded = false;
-            }
-        }
-
-        updateStatusJson();
-        return all_reloaded ? 0 : 0;
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
     static bool validateJsonSyntax(const std::string &content) {
-        int brace_depth = 0;
-        int bracket_depth = 0;
-        bool in_string = false;
-        bool escape = false;
-
-        for (char c : content) {
-            if (escape) {
-                escape = false;
-                continue;
-            }
-            if (c == '\\' && in_string) {
-                escape = true;
-                continue;
-            }
-            if (c == '"') {
-                in_string = !in_string;
-                continue;
-            }
-            if (in_string) continue;
-
-            if (c == '{') brace_depth++;
-            else if (c == '}') brace_depth--;
-            else if (c == '[') bracket_depth++;
-            else if (c == ']') bracket_depth--;
-
-            if (brace_depth < 0 || bracket_depth < 0) return false;
-        }
-        return (!in_string && brace_depth == 0 && bracket_depth == 0 && !content.empty());
+        return kaorios::validateNativeJson("", content);
     }
 
     static bool validateXmlSyntax(const std::string &content) {
@@ -833,171 +767,93 @@ public:
         return true;
     }
 
-    int cmdConfigSet(const std::string &engine, const std::string &src_path) {
-        std::string filename;
-        bool is_xml = false;
-        if (engine == "pif") filename = "pif.json";
-        else if (engine == "hma") filename = "hma.json";
-        else if (engine == "copg") filename = "spoof.json";
-        else if (engine == "tee") { filename = "keybox.xml"; is_xml = true; }
-        else {
-            std::cerr << "Invalid engine for config: " << engine << "\n";
-            return 1;
-        }
-
-        // Security check: reject symlinks
-        struct stat lst{};
-        if (lstat(src_path.c_str(), &lst) != 0) {
-            std::cerr << "Error: Source configuration file does not exist: " << src_path << "\n";
-            return 1;
-        }
-        if (S_ISLNK(lst.st_mode)) {
-            std::cerr << "Security violation: Symlinks not permitted for configuration source.\n";
-            return 1;
-        }
-
-        std::ifstream in(src_path);
-        if (!in.is_open()) {
-            std::cerr << "Error: Cannot open source file: " << src_path << "\n";
-            return 1;
-        }
-        std::stringstream buffer;
-        buffer << in.rdbuf();
-        std::string content = buffer.str();
-        in.close();
-
-        // Validate syntax before touching destination
-        if (is_xml) {
-            if (!validateXmlSyntax(content)) {
-                std::cerr << "Validation failed: Invalid Keybox XML format.\n";
-                return 1;
-            }
-        } else {
-            if (!validateJsonSyntax(content)) {
-                std::cerr << "Validation failed: Malformed JSON syntax.\n";
-                return 1;
-            }
-        }
-
-        // Atomic write with flock and LKG backup
-        std::error_code ec;
-        fs::create_directories(data_dir_, ec);
-        std::string lock_path = data_dir_ + "/.config.lock";
-        int lock_fd = open(lock_path.c_str(), O_CREAT | O_RDWR, 0600);
-        if (lock_fd >= 0) {
-            flock(lock_fd, LOCK_EX);
-        }
-
-        std::string tmp_dest = data_dir_ + "/." + filename + ".tmp." + std::to_string(getpid());
-        std::string final_dest = data_dir_ + "/" + filename;
-        std::string lkg_dest = data_dir_ + "/" + filename + ".lkg";
-
-        int out_fd = open(tmp_dest.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
-        if (out_fd < 0) {
-            std::cerr << "Error opening temporary staging file: " << strerror(errno) << "\n";
-            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
-            return 1;
-        }
-
-        ssize_t written = write(out_fd, content.data(), content.size());
-        fchmod(out_fd, 0600);
-        fsync(out_fd);
-        close(out_fd);
-
-        if (written != static_cast<ssize_t>(content.size())) {
-            unlink(tmp_dest.c_str());
-            std::cerr << "Error: Incomplete write to staging file.\n";
-            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
-            return 1;
-        }
-
-        // Save existing valid config as LKG backup before replacing
-        struct stat curr_st{};
-        if (stat(final_dest.c_str(), &curr_st) == 0 && curr_st.st_size > 0) {
-            std::ifstream cur_in(final_dest, std::ios::binary);
-            std::ofstream lkg_out(lkg_dest, std::ios::binary | std::ios::trunc);
-            if (cur_in && lkg_out) {
-                lkg_out << cur_in.rdbuf();
-                lkg_out.flush();
-                chmod(lkg_dest.c_str(), 0600);
-            }
-        }
-
-        if (rename(tmp_dest.c_str(), final_dest.c_str()) != 0) {
-            std::cerr << "Error replacing target file: " << strerror(errno) << "\n";
-            unlink(tmp_dest.c_str());
-            if (lock_fd >= 0) { flock(lock_fd, LOCK_UN); close(lock_fd); }
-            return 1;
-        }
-
-        // Advance stored and requested generations
-        uint64_t next_gen = getStoredGeneration(engine) + 1;
-        setStoredGeneration(engine, next_gen);
-        setRequestedGeneration(engine, next_gen);
-
-        // Set reload marker
-        std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-
-        if (lock_fd >= 0) {
-            flock(lock_fd, LOCK_UN);
-            close(lock_fd);
-        }
-
-        updateStatusJson();
-        std::cout << "Successfully updated " << filename << " atomically with LKG backup (generation " << next_gen << ").\n";
-        return 0;
+    static std::string configName(const std::string &engine) {
+        if (engine == "pif" || engine == "hma" || engine == "kaorios") return engine + ".json";
+        if (engine == "copg") return "spoof.json";
+        if (engine == "tee") return "keybox.xml";
+        throw std::runtime_error("Invalid config engine");
     }
 
-    int cmdConfigRollback(const std::string &engine) {
-        std::string filename;
-        if (engine == "pif") filename = "pif.json";
-        else if (engine == "hma") filename = "hma.json";
-        else if (engine == "copg") filename = "spoof.json";
-        else if (engine == "tee") filename = "keybox.xml";
-        else {
-            std::cerr << "Invalid engine for rollback: " << engine << "\n";
-            return 1;
-        }
+    static bool validConfig(const std::string &engine, const std::string &content) {
+        return engine == "tee" ? validateXmlSyntax(content) : kaorios::validateNativeJson(engine, content);
+    }
 
-        std::string lkg_dest = data_dir_ + "/" + filename + ".lkg";
-        std::string final_dest = data_dir_ + "/" + filename;
-
+    static std::string readConfigSource(const std::string &path) {
+        int fd = open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         struct stat st{};
-        if (stat(lkg_dest.c_str(), &st) != 0 || st.st_size == 0) {
-            std::cerr << "No Last-Known-Good (LKG) backup found for " << engine << " (" << lkg_dest << ").\n";
-            return 1;
+        if (fd < 0) throw std::runtime_error("Source open failed");
+        if (fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 0022) || st.st_size > 16*1024*1024) {
+            close(fd); throw std::runtime_error("Untrusted source file");
         }
-
-        std::ifstream lkg_in(lkg_dest, std::ios::binary);
-        std::string tmp_dest = data_dir_ + "/." + filename + ".rb.tmp." + std::to_string(getpid());
-        std::ofstream tmp_out(tmp_dest, std::ios::binary | std::ios::trunc);
-        if (!lkg_in || !tmp_out) {
-            std::cerr << "Failed to read LKG backup file.\n";
-            return 1;
+        std::string content;
+        char buf[8192]; ssize_t n;
+        while ((n = read(fd, buf, sizeof(buf))) != 0) {
+            if (n < 0) { if (errno == EINTR) continue; close(fd); throw std::runtime_error("Source read failed"); }
+            content.append(buf, n);
+            if (content.size() > 16*1024*1024) { close(fd); throw std::runtime_error("Source too large"); }
         }
-        tmp_out << lkg_in.rdbuf();
-        tmp_out.flush();
-        tmp_out.close();
+        close(fd);
+        return content;
+    }
 
-        chmod(tmp_dest.c_str(), 0600);
-        if (rename(tmp_dest.c_str(), final_dest.c_str()) != 0) {
-            std::cerr << "Failed to restore LKG config: " << strerror(errno) << "\n";
-            unlink(tmp_dest.c_str());
-            return 1;
-        }
+    int publishConfig(const std::string &engine, const std::string &src_path, bool rollback) {
+        try {
+            const auto filename = configName(engine);
+            kaorios::NativeStore store(data_dir_);
+            std::string content;
+            if (rollback) content = store.read(filename + ".lkg");
+            else content = readConfigSource(src_path);
+            if (!validConfig(engine, content)) throw std::runtime_error("Configuration validation failed");
+            const auto previous = store.read(filename, true);
+            // Set retains full replacement semantics, including deliberate field removal.
+            std::string generation = store.read(engine + ".stored_gen", true);
+            uint64_t gen = previous.empty() ? 0 : 1;
+            if (!generation.empty()) {
+                size_t end = 0;
+                if (generation[0] < '0' || generation[0] > '9') throw std::runtime_error("Invalid stored generation");
+                gen = std::stoull(generation, &end);
+                if (generation.find_first_not_of(" \r\n\t", end) != std::string::npos) throw std::runtime_error("Invalid stored generation");
+            }
+            if (gen == UINT64_MAX) throw std::runtime_error("Generation exhausted");
+            ++gen;
+            for (const auto &name : {filename, filename + ".lkg", engine + ".stored_gen", engine + ".requested_gen", engine + ".verified", engine + ".reload_pending"}) store.check(name);
+            if (!rollback && validConfig(engine, previous)) store.write(filename + ".lkg", previous);
+            // Metadata is published first: interrupted writes fail closed as pending,
+            // never leaving the previous ACK current for newly published content.
+            store.remove(engine + ".verified");
+            store.write(engine + ".reload_pending", "");
+            store.write(engine + ".requested_gen", std::to_string(gen) + "\n");
+            store.write(engine + ".stored_gen", std::to_string(gen) + "\n");
+            store.write(filename, content);
+            std::cout << "Configuration published: " << filename << " (generation " << gen << ").\n";
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
+    }
 
-        uint64_t next_gen = getStoredGeneration(engine) + 1;
-        setStoredGeneration(engine, next_gen);
-        setRequestedGeneration(engine, next_gen);
-        std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-        updateStatusJson();
-        std::cout << "Successfully rolled back " << engine << " to Last-Known-Good (LKG) configuration (generation " << next_gen << ").\n";
-        return 0;
+    int cmdConfigSet(const std::string &engine, const std::string &source) { return publishConfig(engine, source, false); }
+    int cmdConfigRollback(const std::string &engine) { return publishConfig(engine, "", true); }
+
+    int cmdConfigValidate(const std::string &engine, const std::string &source = "") {
+        try {
+            configName(engine);
+            std::string content;
+            if (source.empty()) { kaorios::NativeStore store(data_dir_); content = store.read(configName(engine)); }
+            else content = readConfigSource(source);
+            if (!validConfig(engine, content)) throw std::runtime_error("Configuration validation failed");
+            std::cout << engine << ": valid\n"; return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
+    }
+
+    int cmdConfigSync(const std::string &engine) {
+        if (engine != "all") { try { configName(engine); } catch (...) { return 1; } }
+        std::cerr << "Settings.Global sync unsupported: repository defines no native-config-to-ROM Settings.Global mapping; no settings were changed.\n";
+        return 1;
     }
 
     int cmdConfigGet(const std::string &engine) {
         std::string filename;
-        if (engine == "pif") filename = "pif.json";
+        if (engine == "kaorios") filename = "kaorios.json";
+        else if (engine == "pif") filename = "pif.json";
         else if (engine == "hma") filename = "hma.json";
         else if (engine == "copg") filename = "spoof.json";
         else if (engine == "tee") filename = "keybox.xml";
@@ -1006,14 +862,11 @@ public:
             return 1;
         }
 
-        std::string path = data_dir_ + "/" + filename;
-        std::ifstream f(path);
-        if (!f.is_open()) {
-            std::cerr << "Configuration file not found: " << path << "\n";
-            return 1;
-        }
-        std::cout << f.rdbuf();
-        return 0;
+        try {
+            kaorios::NativeStore store(data_dir_);
+            std::cout << store.read(filename);
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
     int cmdDiagnostics() {
@@ -1094,14 +947,20 @@ int main(int argc, char **argv) {
         }
         return ctl.cmdVerify(eng, clear_mode);
     } else if (action == "config") {
-        if (args.size() >= 3 && args[0] == "set") {
+        if (args.size() >= 2 && args[0] == "sync") {
+            return ctl.cmdConfigSync(args[1]);
+        } else if (args.size() >= 2 && args[0] == "validate") {
+            return ctl.cmdConfigValidate(args[1], args.size() > 2 ? args[2] : "");
+        } else if (args.size() >= 2 && args[0] == "status") {
+            return ctl.cmdConfigValidate(args[1]);
+        } else if (args.size() >= 3 && args[0] == "set") {
             return ctl.cmdConfigSet(args[1], args[2]);
         } else if (args.size() >= 2 && args[0] == "rollback") {
             return ctl.cmdConfigRollback(args[1]);
         } else if (args.size() >= 2 && args[0] == "get") {
             return ctl.cmdConfigGet(args[1]);
         } else {
-            std::cerr << "Usage: helperctl config {set|get|rollback} <pif|hma|tee|copg> [file]\n";
+            std::cerr << "Usage: helperctl config {set|get|rollback|validate|status|sync} <pif|hma|tee|copg|kaorios|all> [file]\n";
             return 1;
         }
     } else if (action == "diagnostics") {
