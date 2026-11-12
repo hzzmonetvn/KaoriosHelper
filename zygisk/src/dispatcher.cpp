@@ -5,10 +5,20 @@
 
 #include "dispatcher.hpp"
 #include "logging.hpp"
+#include <algorithm>
 
 namespace kaorios {
 
 KaoriosDispatcher::KaoriosDispatcher() = default;
+
+bool KaoriosDispatcher::failed(IEngine *engine) const {
+    return std::find(failed_engines_.begin(), failed_engines_.end(), engine) != failed_engines_.end();
+}
+
+void KaoriosDispatcher::recordFailure(IEngine *engine) {
+    if (!failed(engine)) failed_engines_.push_back(engine);
+    LOGE("Engine %s lifecycle failed; isolated for this process", engine->getName());
+}
 
 void KaoriosDispatcher::registerEngine(std::unique_ptr<IEngine> engine) {
     if (engine) {
@@ -36,8 +46,10 @@ void KaoriosDispatcher::onLoad(zygisk::Api *api, JNIEnv *env) {
     LOGI("KaoriosHelper Zygisk Dispatcher loaded (API v%d)", ZYGISK_API_VERSION);
 
     for (auto &engine : engines_) {
-        if (engine->isEnabled()) {
-            engine->onLoad(api, env);
+        try {
+            if (!failed(engine.get()) && engine->isEnabled()) engine->onLoad(api, env);
+        } catch (...) {
+            recordFailure(engine.get());
         }
     }
 }
@@ -56,8 +68,12 @@ void KaoriosDispatcher::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
     jint uid = args->uid;
 
     for (auto &engine : engines_) {
-        if (engine->isEnabled() && engine->shouldHandleApp(process_name, uid)) {
-            active_app_engines_.push_back(engine.get());
+        try {
+            if (!failed(engine.get()) && engine->isEnabled() && engine->shouldHandleApp(process_name, uid)) {
+                active_app_engines_.push_back(engine.get());
+            }
+        } catch (...) {
+            recordFailure(engine.get());
         }
     }
 
@@ -71,7 +87,8 @@ void KaoriosDispatcher::preAppSpecialize(zygisk::AppSpecializeArgs *args) {
 
     LOGD("Process '%s' claimed by %zu engine(s)", process_name.c_str(), active_app_engines_.size());
     for (auto *engine : active_app_engines_) {
-        engine->preAppSpecialize(args, process_name);
+        try { engine->preAppSpecialize(args, process_name); }
+        catch (...) { recordFailure(engine); }
     }
 }
 
@@ -89,17 +106,25 @@ void KaoriosDispatcher::postAppSpecialize(const zygisk::AppSpecializeArgs *args)
         }
     }
     for (auto *engine : active_app_engines_) {
-        engine->postAppSpecialize(args, process_name);
+        if (failed(engine)) continue;
+        try { engine->postAppSpecialize(args, process_name); }
+        catch (...) { recordFailure(engine); }
     }
 }
 
 void KaoriosDispatcher::preServerSpecialize(zygisk::ServerSpecializeArgs *args) {
     handling_server_ = false;
+    active_server_engines_.clear();
 
     for (auto &engine : engines_) {
-        if (engine->isEnabled() && engine->shouldHandleServer()) {
-            handling_server_ = true;
-            engine->preServerSpecialize(args);
+        try {
+            if (!failed(engine.get()) && engine->isEnabled() && engine->shouldHandleServer()) {
+                handling_server_ = true;
+                engine->preServerSpecialize(args);
+                active_server_engines_.push_back(engine.get());
+            }
+        } catch (...) {
+            recordFailure(engine.get());
         }
     }
 
@@ -115,10 +140,10 @@ void KaoriosDispatcher::postServerSpecialize(const zygisk::ServerSpecializeArgs 
         return;
     }
 
-    for (auto &engine : engines_) {
-        if (engine->isEnabled() && engine->shouldHandleServer()) {
-            engine->postServerSpecialize(args);
-        }
+    for (auto *engine : active_server_engines_) {
+        if (failed(engine)) continue;
+        try { engine->postServerSpecialize(args); }
+        catch (...) { recordFailure(engine); }
     }
 }
 

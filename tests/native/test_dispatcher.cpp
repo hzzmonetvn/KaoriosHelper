@@ -36,14 +36,14 @@ public:
             denylist_unmount_called = true;
         }
     }
-    static int connectCompanion(void *) { return 0; }
+    static int connectCompanion(void *) { return -1; }
     static uint32_t getFlags(void *) { return 0; }
     static bool exemptFd(int) { return true; }
     static void hookJniNativeMethods(JNIEnv *, const char *, JNINativeMethod *, int) {}
     static void pltHookRegister(dev_t, ino_t, const char *, void *, void **) {}
     static bool pltHookCommit() { return true; }
 
-    zygisk::internal::api_table table;
+    zygisk::internal::api_table table{};
     zygisk::Api api;
 
     MockZygiskContext() : api(&table) {
@@ -690,6 +690,35 @@ void test_unsupported_arch_reported(const std::string &dir) {
     std::cout << "  [PASS] test_unsupported_arch_reported" << std::endl;
 }
 
+class LifecycleProbe final : public kaorios::IEngine {
+public:
+    LifecycleProbe(bool throws, int &calls) : throws_(throws), calls_(calls) {}
+    const char *getName() const override { return throws_ ? "failing-probe" : "healthy-probe"; }
+    bool isEnabled() const override { return true; }
+    bool shouldHandleServer() override { return true; }
+    void preServerSpecialize(zygisk::ServerSpecializeArgs *) override {
+        if (throws_) throw std::runtime_error("test failure");
+        ++calls_;
+    }
+    void postServerSpecialize(const zygisk::ServerSpecializeArgs *) override { ++calls_; }
+private:
+    bool throws_;
+    int &calls_;
+};
+
+void test_dispatcher_failure_isolation() {
+    kaorios::KaoriosDispatcher dispatcher;
+    MockZygiskContext context;
+    int failed_calls = 0, healthy_calls = 0;
+    dispatcher.registerEngine(std::make_unique<LifecycleProbe>(true, failed_calls));
+    dispatcher.registerEngine(std::make_unique<LifecycleProbe>(false, healthy_calls));
+    dispatcher.onLoad(&context.api, nullptr);
+    dispatcher.preServerSpecialize(nullptr);
+    dispatcher.postServerSpecialize(nullptr);
+    assert(failed_calls == 0);
+    assert(healthy_calls == 2);
+}
+
 int main() {
     std::string temp_dir = "/tmp/kaorios_test_" + std::to_string(getpid());
     fs::create_directories(temp_dir);
@@ -733,6 +762,7 @@ int main() {
         test_dispatcher_null_nice_name_fallback(temp_dir);
         test_dispatcher_server_specialization(temp_dir);
         test_dispatcher_server_disabled_dlclose(temp_dir);
+        test_dispatcher_failure_isolation();
 
         std::cout << "\n[SUITE 6/7] ABI Contract & Keystore Non-Interference Tests (2 tests):" << std::endl;
         test_abi_table_contract_verification();
@@ -750,7 +780,7 @@ int main() {
         test_unsupported_arch_reported(temp_dir);
 
         std::cout << "\n========================================================" << std::endl;
-        std::cout << "    ALL 36 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
+        std::cout << "    ALL 37 NATIVE TESTS PASSED SUCCESSFULLY! (HOST)     " << std::endl;
         std::cout << "========================================================" << std::endl;
     } catch (const std::exception &e) {
         std::cerr << "Exception: " << e.what() << std::endl;

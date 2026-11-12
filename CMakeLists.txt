@@ -45,6 +45,9 @@ add_executable(test_native
     tests/native/test_dispatcher.cpp
 )
 
+enable_testing()
+add_test(NAME dispatcher COMMAND test_native)
+
 # Native helperctl control CLI
 add_executable(helperctl
     cli/helperctl/helperctl.cpp

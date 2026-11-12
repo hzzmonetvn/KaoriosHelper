@@ -125,20 +125,26 @@ class TestPackaging(unittest.TestCase):
                 build_zip(module_dir=mod_path, out_dir=out_path, require_binaries=True)
 
 
+    def test_packaging_excludes_runtime_data(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
+            import shutil
+            source = Path(tmp) / "module"
+            shutil.copytree(MODULE_DIR, source)
+            (source / "data" / "keybox.xml").write_text("PRIVATE TEST MATERIAL")
+            package = build_zip(source, Path(out), require_binaries=False)
+            with zipfile.ZipFile(package) as archive:
+                self.assertFalse(any(name.startswith("data/") for name in archive.namelist()))
+                self.assertFalse(any(b"PRIVATE TEST MATERIAL" in archive.read(name)
+                                     for name in archive.namelist()))
+
     def test_post_fs_data_resetprop_rules(self):
         post_fs_data = MODULE_DIR / "post-fs-data.sh"
         self.assertTrue(post_fs_data.is_file())
         content = post_fs_data.read_text()
-        # Verify AlwaysStrong / PIF resetprop parity
-        self.assertIn("resetprop_if_diff", content)
-        self.assertIn("ro.boot.verifiedbootstate", content)
-        self.assertIn("ro.boot.flash.locked", content)
-        self.assertIn("ro.boot.vbmeta.device_state", content)
-        self.assertIn("ro.boot.warranty_bit", content)
-        self.assertIn("ro.boot.realmebootstate", content)
-        self.assertIn("ro.is_ever_orange", content)
-        self.assertIn("ro.build.type", content)
-        self.assertIn("ro.build.tags", content)
+        # Boot preparation must leave global security properties untouched.
+        self.assertNotIn("resetprop", content)
+        self.assertNotIn("resetprop", (MODULE_DIR / "service.sh").read_text())
+        self.assertIn("chmod 0700", content)
 
 
 if __name__ == "__main__":

@@ -94,6 +94,7 @@ def verify_zip(zip_path: Path):
             "uninstall.sh",
             "helperctl.sh",
             "helperctl",
+            "classes.dex",
             "zygisk/arm64-v8a.so",
             "zygisk/armeabi-v7a.so",
             "bin/arm64-v8a/helperctl",
@@ -105,7 +106,14 @@ def verify_zip(zip_path: Path):
             if req not in namelist:
                 raise ValueError(f"Required file {req} missing from package ZIP {zip_path.name}")
 
+        if zf.testzip() is not None:
+            raise ValueError("ZIP checksum verification failed")
+        dex = zf.read("classes.dex")
+        if len(dex) < 112 or not dex.startswith(b"dex\n"):
+            raise ValueError("Missing or invalid DEX header")
         for entry in zf.infolist():
+            if entry.filename.startswith("data/") or entry.filename.endswith((".pem", ".key", ".lkg")):
+                raise ValueError("Runtime/private data in module ZIP")
             if entry.filename.endswith(".sh") or "update-binary" in entry.filename or entry.filename.endswith(".so") or "helperctl" in entry.filename:
                 mode = entry.external_attr >> 16
                 if not (mode & 0o111):
@@ -120,7 +128,7 @@ def print_status_matrix(host_ok: bool, cross_ok: bool, package_ok: bool):
     print("=" * 80)
     print(f"{'Dimension':<26} {'Status':<16} {'Notes'}")
     print("-" * 80)
-    print(f"{'HOST_TESTED':<26} {('PASS' if host_ok else 'FAIL'):<16} C++20 (36 native tests) & Python (41 tests) passed")
+    print(f"{'HOST_TESTED':<26} {('PASS' if host_ok else 'NOT_RUN'):<16} Host suite is a separate required CI job")
     print(f"{'ANDROID_CROSS_COMPILED':<26} {('PASS' if cross_ok else 'FAIL'):<16} 2 ABIs (arm64-v8a, armeabi-v7a) compiled & verified")
     print(f"{'PACKAGED':<26} {('PASS' if package_ok else 'FAIL'):<16} Flashable ZIP assembled with complete permissions")
     print(f"{'DEVICE_TESTED':<26} {'NOT_RUN':<16} Gated on physical hardware attachment")
@@ -147,6 +155,10 @@ def main():
                             cwd=str(ROOT_DIR), capture_output=True)
     py_passed = (res_py.returncode == 0)
 
+    if not py_passed:
+        raise RuntimeError("Python regression suite failed: " + res_py.stderr.decode(errors="replace"))
+    if native_bin.is_file() and not native_passed:
+        raise RuntimeError("Native regression suite failed")
     host_ok = native_passed and py_passed
 
     print("\n[Stage 1/3] Verifying Multi-ABI Shared Libraries...")

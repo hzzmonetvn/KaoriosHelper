@@ -19,6 +19,10 @@ elif [ -x "$MODDIR/helperctl" ]; then
   exec "$MODDIR/helperctl" "$@"
 fi
 
+# The native control interface is mandatory; shell does not infer runtime state.
+printf '%s\n' '{"schemaVersion":1,"module":{"id":"kaorioshelper","active":false},"status":"INCOMPLETE_RUNTIME","engines":{}}'
+exit 1
+
 JSON_MODE=false
 for arg in "$@"; do
   if [ "$arg" = "--json" ]; then

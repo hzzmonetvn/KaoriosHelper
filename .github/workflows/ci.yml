@@ -1,15 +1,16 @@
 name: KaoriosHelper CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, 'refactor/**' ]
   pull_request:
     branches: [ main, master ]
 
 jobs:
   test-host:
     name: Host Tests (C++20 & Python)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -32,7 +33,8 @@ jobs:
 
   build-android:
     name: Android Multi-ABI Cross-Compilation & Packaging
-    runs-on: ubuntu-latest
+    needs: test-host
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4

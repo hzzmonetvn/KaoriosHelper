@@ -53,8 +53,11 @@ def build_zip(
 
     binary_files = [
         "helperctl",
+        "bin/arm64-v8a/helperctl",
+        "bin/armeabi-v7a/helperctl",
         "zygisk/arm64-v8a.so",
         "zygisk/armeabi-v7a.so",
+        "classes.dex",
     ]
 
     for rel_path in required_files:
@@ -71,10 +74,19 @@ def build_zip(
                 )
 
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(module_dir):
-            for file in files:
+        for root, dirs, files in os.walk(module_dir, followlinks=False):
+            # Runtime storage never belongs in a distributable module.
+            dirs[:] = sorted(d for d in dirs if d != "data")
+            for directory in dirs:
+                if (Path(root) / directory).is_symlink():
+                    raise ValueError("Symlink directory in release payload")
+            for file in sorted(files):
                 file_path = Path(root) / file
                 rel_path = file_path.relative_to(module_dir)
+                if file_path.is_symlink():
+                    raise ValueError("Symlink file in release payload")
+                if file == "keybox.xml" or file.endswith((".pem", ".key", ".lkg", ".last_known_good")):
+                    raise ValueError("Private configuration in release payload")
 
                 # Skip transient/temporary files or logs
                 if file.startswith(".tmp") or file.endswith(".tmp") or ".old" in file:

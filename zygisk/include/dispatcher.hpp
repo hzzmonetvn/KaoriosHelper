@@ -34,7 +34,11 @@ private:
     JNIEnv *env_ = nullptr;
     std::vector<std::unique_ptr<IEngine>> engines_;
     std::vector<IEngine*> active_app_engines_;
+    std::vector<IEngine*> active_server_engines_;
+    std::vector<IEngine*> failed_engines_;
     bool handling_server_ = false;
+    bool failed(IEngine *engine) const;
+    void recordFailure(IEngine *engine);
 };
 
 } // namespace kaorios
