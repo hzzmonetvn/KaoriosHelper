@@ -125,6 +125,22 @@ class TestPackaging(unittest.TestCase):
                 build_zip(module_dir=mod_path, out_dir=out_path, require_binaries=True)
 
 
+    def test_boot_rejects_runtime_symlink(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            module = base / "module"
+            (module / "data").mkdir(parents=True)
+            outside = base / "outside"
+            outside.mkdir()
+            victim = outside / "unrelated.json"
+            victim.write_text("preserve")
+            (module / "data" / "runtime").symlink_to(outside, target_is_directory=True)
+            script = module / "post-fs-data.sh"
+            script.write_text((MODULE_DIR / "post-fs-data.sh").read_text())
+            result = subprocess.run(["sh", str(script)], capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(victim.read_text(), "preserve")
+
     def test_packaging_excludes_runtime_data(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
             import shutil

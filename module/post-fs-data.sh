@@ -4,6 +4,8 @@
 MODDIR="${0%/*}"
 DATA_DIR="$MODDIR/data"
 [ ! -L "$DATA_DIR" ] || exit 1
+[ ! -L "$DATA_DIR/logs" ] || exit 1
+[ ! -L "$DATA_DIR/runtime" ] || exit 1
 umask 077
 mkdir -p "$DATA_DIR/logs" || exit 1
 chmod 0700 "$DATA_DIR" "$DATA_DIR/logs" || exit 1

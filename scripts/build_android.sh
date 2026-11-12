@@ -28,6 +28,10 @@ if [ -z "${NDK}" ]; then
     exit 1
 fi
 
+if ! grep -qE '^Pkg.Revision[[:space:]]*=[[:space:]]*26\.1\.10909125[[:space:]]*$' "${NDK}/source.properties"; then
+    printf '%s\n' 'ERROR: Android NDK r26b (26.1.10909125) is required.' >&2
+    exit 1
+fi
 LLVM_BIN="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
 echo "Using Android NDK at: ${NDK}"
 echo "LLVM Toolchain: ${LLVM_BIN}"
@@ -347,4 +351,4 @@ esac
 echo "=========================================================="
 echo "  Cross-Compilation Complete! Output files in module/"
 echo "=========================================================="
-ls -lh "${ZYGISK_DIR}"/*.so "${OUT_MODULE_DIR}/helperctl"
+ls -lh "${ZYGISK_DIR}"/*.so "${OUT_MODULE_DIR}/bin/"*/helperctl

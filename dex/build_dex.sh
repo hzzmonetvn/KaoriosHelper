@@ -12,6 +12,8 @@ OUT_DIR="${SCRIPT_DIR}/build"
 CLASSES_DIR="${OUT_DIR}/classes"
 DEX_DIR="${OUT_DIR}/dex"
 
+# Isolated generated directories: prevent removed Java sources surviving a rebuild.
+rm -rf "${CLASSES_DIR}" "${DEX_DIR}"
 mkdir -p "${CLASSES_DIR}" "${DEX_DIR}"
 
 # Locate javac
