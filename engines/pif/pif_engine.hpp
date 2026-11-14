@@ -9,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include "engine.hpp"
+#include "../../core/config/runtime_snapshot.hpp"
 
 namespace kaorios {
 
@@ -53,7 +54,7 @@ private:
     int device_initial_sdk_int_ = 0;
     int spoof_props_ = 1;
     int spoof_build_ = 1;
-    uint64_t applied_generation_ = 0;
+    RuntimeConfigSnapshot config_snapshot_;
 
     void applyBuildField(JNIEnv *env, jclass build_class, const char *name, const std::string &val);
     void applyVersionField(JNIEnv *env, jclass version_class, const char *name, const std::string &val);

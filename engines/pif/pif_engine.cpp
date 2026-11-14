@@ -10,7 +10,6 @@
 #elif __has_include("../../include/ack_protocol.hpp")
 #include "../../include/ack_protocol.hpp"
 #endif
-#include <fstream>
 #include <cstdio>
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -220,21 +219,16 @@ void PifEngine::installPropertyHook() {
 
 bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof_provider) {
     std::string config_path = data_dir_ + "/pif.json";
-    struct stat st{};
 
     spoof_provider = 0;
     spoof_props_ = 1;
     spoof_build_ = 1;
 
-    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
-        LOGW("PIF: Configuration file missing or empty at %s. Engine inactive until configured.", config_path.c_str());
-        props.clear();
-        return false;
-    }
-
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        LOGW("PIF: Failed to open %s", config_path.c_str());
+    RuntimeConfigSnapshot snapshot;
+    try {
+        snapshot = readRuntimeConfigSnapshot(data_dir_, "pif", "pif.json");
+    } catch (...) {
+        LOGW("PIF: Configuration snapshot unavailable");
         if (!last_valid_props_.empty()) {
             LOGI("PIF: Retaining last-known-good user configuration");
             props = last_valid_props_;
@@ -243,10 +237,14 @@ bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof
         props.clear();
         return false;
     }
+    if (snapshot.bytes.empty()) {
+        props.clear();
+        return false;
+    }
 
     nlohmann::json j;
     try {
-        file >> j;
+        j = nlohmann::json::parse(snapshot.bytes);
         if (!j.is_object()) {
             LOGW("PIF: JSON root is not an object in %s", config_path.c_str());
             if (!last_valid_props_.empty()) {
@@ -343,6 +341,7 @@ bool PifEngine::loadConfig(std::map<std::string, std::string> &props, int &spoof
         std::lock_guard<std::mutex> lock(s_active_props_mutex);
         s_active_spoof_props = props;
     }
+    config_snapshot_ = std::move(snapshot);
 
     return true;
 }
@@ -445,9 +444,10 @@ void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
     RuntimeAck ack;
     ack.engine = "pif";
     ack.processName = process_name;
-    ack.pid = getpid();
-    ack.uid = getuid();
-    ack.configGeneration = applied_generation_;
+    if (!bindRuntimeAckToSnapshot(ack, config_snapshot_)) {
+        LOGW("PIF: Runtime ACK withheld without current configuration identity");
+        return;
+    }
 
     if (hook_installed_) {
         ack.initResult = 0;

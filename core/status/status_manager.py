@@ -1,22 +1,19 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (C) 2026 HzzMonet / Kaorios Project
-"""
-KaoriosHelper StatusManager.
-Tracks and reports granular engine states, installation status, Zygisk readiness,
-configuration generations, and reboot requirements.
-"""
+"""Compatibility status API backed exclusively by the native control interface."""
 
 import json
 import os
-import stat
+import subprocess
+import tempfile
 from enum import Enum
 from pathlib import Path
 from typing import Dict, Any
 
 
 class UnifiedStatus(str, Enum):
-    """Unified operational states defined in the KaoriosHelper specification."""
+    """Native states plus the existing compatibility runtime-evidence states."""
     NOT_CONFIGURED = "NOT_CONFIGURED"
     SAVED = "SAVED"
     PENDING_RELOAD = "PENDING_RELOAD"
@@ -27,156 +24,132 @@ class UnifiedStatus(str, Enum):
     INVALID_CONFIG = "INVALID_CONFIG"
     ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE"
     APPLY_FAILED = "APPLY_FAILED"
+    DISABLED = "DISABLED"
+    INCOMPLETE_RUNTIME = "INCOMPLETE_RUNTIME"
+    FAILED = "FAILED"
+    READY = "READY"
+    DEVICE_UNVERIFIED = "DEVICE_UNVERIFIED"
+
+
+class NativeControlError(Exception):
+    """The native control operation did not return a supported result."""
 
 
 class StatusManager:
-    """Aggregates and publishes operational state reports for Kaorios Toolbox."""
+    """Reads current native evidence; never interprets raw ACKs or cached status."""
 
-    def __init__(self, data_dir: Path):
-        self.data_dir = Path(data_dir).resolve()
+    ENGINES = ("hma", "pif", "tee", "copg", "kaorios")
+    DEFAULT_CONTROL = Path("/data/adb/modules/kaorioshelper/helperctl.sh")
+
+    def __init__(self, data_dir: Path, control_path: Path = None):
+        self.data_dir = Path(data_dir).absolute()
+        self.control_path = Path(control_path).absolute() if control_path is not None else self.DEFAULT_CONTROL
         self.status_file = self.data_dir / "status.json"
 
-    def get_generation(self, engine_name: str, kind: str) -> int:
-        """Read a non-negative per-engine generation, without trusting malformed files."""
+    def _run_control(self, *arguments: str) -> str:
+        environment = dict(os.environ, KAORIOS_DATA_DIR=str(self.data_dir),
+                           KAORIOS_MOD_DIR=str(self.data_dir.parent))
         try:
-            value = int((self.data_dir / f"{engine_name}.{kind}_gen").read_text().strip())
-            return max(0, value)
-        except (OSError, ValueError):
+            result = subprocess.run([str(self.control_path), *arguments], env=environment,
+                                    capture_output=True, text=True, timeout=30, check=True)
+            return result.stdout
+        except (OSError, subprocess.SubprocessError, UnicodeError) as error:
+            # Command output may contain diagnostics; do not propagate it to callers.
+            raise NativeControlError("Native control unavailable or operation failed") from error
+
+    def _check_control(self) -> None:
+        try:
+            version = json.loads(self._run_control("version", "--json"))
+            if (not isinstance(version, dict) or version.get("moduleId") != "kaorioshelper"
+                    or type(version.get("protocolVersion")) is not int
+                    or version["protocolVersion"] != 1
+                    or type(version.get("statusSchemaVersion")) is not int
+                    or version["statusSchemaVersion"] != 1
+                    or not isinstance(version.get("capabilities"), dict)
+                    or version["capabilities"].get("runtimeAckV2") is not True
+                    or version["capabilities"].get("recoverableConfigTransactions") is not True):
+                raise ValueError("Unsupported control contract")
+        except (ValueError, TypeError) as error:
+            raise NativeControlError("Native control contract unsupported") from error
+
+    def _native_report(self) -> Dict[str, Any]:
+        self._check_control()
+        try:
+            report = json.loads(self._run_control("status", "--json"))
+            if (not isinstance(report, dict) or type(report.get("schemaVersion")) is not int
+                    or report["schemaVersion"] != 1 or not isinstance(report.get("module"), dict)
+                    or report["module"].get("id") != "kaorioshelper"
+                    or type(report["module"].get("active")) is not bool
+                    or not isinstance(report["module"].get("version"), str)
+                    or not isinstance(report.get("engines"), dict)):
+                raise ValueError("Invalid native report")
+            for engine in self.ENGINES:
+                state = report["engines"].get(engine)
+                if not isinstance(state, dict) or state.get("status") not in UnifiedStatus._value2member_map_:
+                    raise ValueError("Invalid native engine state")
+                for field in ("enabled", "configValid", "runtimeAvailable", "pendingReload"):
+                    if type(state.get(field)) is not bool:
+                        raise ValueError("Invalid native engine flag")
+                if state.get("deviceVerified") is not False:
+                    raise ValueError("Unsupported device verification evidence")
+                for field in ("storedGeneration", "requestedGeneration", "appliedGeneration"):
+                    if type(state.get(field)) is not int or not 0 <= state[field] <= 2**64 - 1:
+                        raise ValueError("Invalid native engine generation")
+            return report
+        except (ValueError, TypeError) as error:
+            raise NativeControlError("Native control returned an invalid status report") from error
+
+    def get_generation(self, engine_name: str, kind: str) -> int:
+        """Read a native per-engine generation, not the legacy global counter."""
+        if engine_name not in self.ENGINES or kind not in ("stored", "requested", "applied"):
             return 0
+        return self.generate_report()["engines"][engine_name][kind + "Generation"]
 
     def get_runtime_ack_status(self, engine_name: str) -> UnifiedStatus:
-        """Evaluate runtime evidence only; this is not device verification."""
-        if engine_name not in ("hma", "pif", "tee", "copg"):
-            return UnifiedStatus.PENDING_RELOAD
-        stored = self.get_generation(engine_name, "stored")
-        requested = self.get_generation(engine_name, "requested")
-        runtime_dir = self.data_dir / "runtime"
-        try:
-            dir_fd = os.open(runtime_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-            try:
-                flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-                try:
-                    fd = os.open(f"{engine_name}.ack.json", flags, dir_fd=dir_fd)
-                except FileNotFoundError:
-                    fd = os.open(f"{engine_name}.json", flags, dir_fd=dir_fd)
-                try:
-                    metadata = os.fstat(fd)
-                    if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or
-                            metadata.st_mode & 0o022 or not 0 < metadata.st_size <= 65536):
-                        return UnifiedStatus.PENDING_RELOAD
-                    with os.fdopen(fd, "rb", closefd=False) as stream:
-                        content = stream.read(65537)
-                    if len(content) > 65536:
-                        return UnifiedStatus.PENDING_RELOAD
-                    ack = json.loads(content)
-                finally:
-                    os.close(fd)
-            finally:
-                os.close(dir_fd)
-        except (OSError, ValueError, UnicodeError):
-            return UnifiedStatus.PENDING_RELOAD
-        if not isinstance(ack, dict):
-            return UnifiedStatus.PENDING_RELOAD
-        integer_fields = ("schemaVersion", "protocolVersion", "pid", "uid",
-                          "configGeneration", "initResult", "errorCode")
-        if any(type(ack.get(field)) is not int for field in integer_fields):
-            return UnifiedStatus.PENDING_RELOAD
-        if (ack["schemaVersion"] != 1 or ack["protocolVersion"] != 1 or
-                ack.get("engine") != engine_name or ack["pid"] <= 0 or
-                not isinstance(ack.get("processName"), str) or not ack["processName"] or
-                stored <= 0 or ack["configGeneration"] != stored or stored != requested):
-            return UnifiedStatus.PENDING_RELOAD
-        process = ack["processName"]
-        if engine_name == "hma" and (process not in ("system_server", "android") or
-                                      ack["uid"] not in (0, 1000)):
-            return UnifiedStatus.PENDING_RELOAD
-        if engine_name in ("pif", "tee"):
-            processes = ("com.google.android.gms", "com.google.android.gms.unstable")
-            if engine_name == "pif":
-                processes += ("com.android.vending",)
-            if process not in processes:
-                return UnifiedStatus.PENDING_RELOAD
-        event = ack.get("eventType")
-        if event == "APPLY_FAILED" or ack["initResult"] != 0 or ack["errorCode"] != 0:
-            return UnifiedStatus.APPLY_FAILED
-        if event in ("HOOK_INITIALIZED", "HOOK_OBSERVED"):
+        """APPLIED means native runtime initialization, never device verification."""
+        state = self.get_engine_status(engine_name)
+        if state in (UnifiedStatus.READY, UnifiedStatus.DEVICE_UNVERIFIED):
             return UnifiedStatus.APPLIED
+        if state == UnifiedStatus.FAILED:
+            return UnifiedStatus.APPLY_FAILED
+        if state == UnifiedStatus.ENGINE_UNAVAILABLE:
+            return state
         return UnifiedStatus.PENDING_RELOAD
 
     def get_engine_status(self, engine_name: str) -> UnifiedStatus:
-        """Evaluates actual engine status based on disk state, flags, and configuration."""
-        disabled_marker = self.data_dir / f"{engine_name}.disabled"
-        enabled_marker = self.data_dir / f"{engine_name}.enabled"
+        if engine_name not in self.ENGINES:
+            return UnifiedStatus.ENGINE_UNAVAILABLE
+        return UnifiedStatus(self.generate_report()["engines"][engine_name]["status"])
 
-        if engine_name in ["tee", "copg"]:
-            # TEE and COPG require explicit opt-in enablement
-            if not enabled_marker.is_file():
-                return UnifiedStatus.NOT_CONFIGURED
-        else:
-            # HMA and PIF are enabled by default unless explicitly disabled
-            if disabled_marker.is_file():
-                return UnifiedStatus.ENGINE_UNAVAILABLE
-
-        # Check configuration existence and validity
-        config_map = {
-            "pif": "pif.json",
-            "tee": "keybox.xml",
-            "copg": "spoof.json",
-            "hma": "hma.json",
-        }
-        cfg_name = config_map.get(engine_name)
-        if cfg_name:
-            cfg_file = self.data_dir / cfg_name
-            if not cfg_file.is_file() or cfg_file.stat().st_size == 0:
-                return UnifiedStatus.NOT_CONFIGURED
-
-        return self.get_runtime_ack_status(engine_name)
-
-    def generate_report(self, module_version: str = "v1.0.0", root_mode: str = "Root+Zygisk") -> Dict[str, Any]:
-        """Builds a complete structured telemetry and readiness report."""
-        engines = ["hma", "pif", "tee", "copg"]
-        engine_reports = {}
-        reboot_needed = False
-
-        for eng in engines:
-            st = self.get_engine_status(eng)
-            if st == UnifiedStatus.REBOOT_REQUIRED:
-                reboot_needed = True
-            engine_reports[eng] = {
-                "status": st.value,
-                "enabled": (st in [UnifiedStatus.APPLIED, UnifiedStatus.PENDING_RELOAD, UnifiedStatus.APPLYING, UnifiedStatus.APPLY_FAILED]),
-                "deviceVerified": False,
-                "storedGeneration": self.get_generation(eng, "stored"),
-                "requestedGeneration": self.get_generation(eng, "requested"),
-                "appliedGeneration": (self.get_generation(eng, "stored")
-                                      if st == UnifiedStatus.APPLIED else 0),
+    def generate_report(self, module_version: str = None, root_mode: str = None) -> Dict[str, Any]:
+        """Return the native wire report; legacy version/root-mode arguments are ignored."""
+        try:
+            return self._native_report()
+        except NativeControlError:
+            return {
+                "schemaVersion": 1,
+                "module": {"id": "kaorioshelper", "version": "unknown", "active": False},
+                "engines": {engine: {
+                    "status": UnifiedStatus.ENGINE_UNAVAILABLE.value,
+                    "enabled": False, "configValid": False, "runtimeAvailable": False,
+                    "deviceVerified": False, "pendingReload": True,
+                    "storedGeneration": 0, "requestedGeneration": 0, "appliedGeneration": 0,
+                    "lastError": "Native control unavailable or unsupported",
+                } for engine in self.ENGINES},
             }
 
-        # Check generation
-        gen_file = self.data_dir / "generation.txt"
-        current_gen = 0
-        if gen_file.is_file():
-            try:
-                current_gen = int(gen_file.read_text().strip())
-            except ValueError:
-                pass
-
-        report = {
-            "module": {
-                "id": "kaorioshelper",
-                "version": module_version,
-                "rootMode": root_mode,
-                "rebootRequired": reboot_needed,
-                "storedGeneration": current_gen,
-                "activeGeneration": 0,
-            },
-            "engines": engine_reports,
-        }
-        return report
-
-    def publish_status(self, module_version: str = "v1.0.0") -> None:
-        """Writes report atomically to status.json."""
+    def publish_status(self, module_version: str = None) -> None:
+        """Publish a private atomic cache of one native report, never a status input."""
         report = self.generate_report(module_version)
-        tmp_status = self.data_dir / ".status.json.tmp"
-        tmp_status.write_text(json.dumps(report, indent=2))
-        tmp_status.replace(self.status_file)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.data_dir,
+                                             prefix=".status.", delete=False) as stream:
+                temporary = Path(stream.name)
+                json.dump(report, stream, indent=2)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(self.status_file)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)

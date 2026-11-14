@@ -12,6 +12,7 @@
 #include <atomic>
 #include <unistd.h>
 #include "engine.hpp"
+#include "../../core/config/runtime_snapshot.hpp"
 
 namespace kaorios {
 
@@ -58,8 +59,7 @@ private:
 
     bool loadConfig();
     bool config_loaded_ = false;
-    std::string config_json_snapshot_;
-    time_t last_config_mtime_ = 0;
+    RuntimeConfigSnapshot config_snapshot_;
     mutable std::mutex config_mutex_;
 
     // Parsed scope: caller_package -> set of packages to hide

@@ -11,3 +11,9 @@ mkdir -p "$DATA_DIR/logs" || exit 1
 chmod 0700 "$DATA_DIR" "$DATA_DIR/logs" || exit 1
 # Evidence from a previous boot must never establish current runtime state.
 rm -f "$DATA_DIR"/*.verified "$DATA_DIR/runtime/"*.ack.json "$DATA_DIR/runtime/"*.json
+# Refresh request identities before Zygote consumes configuration in this boot.
+if [ -f "$MODDIR/helperctl.sh" ]; then
+  exec sh "$MODDIR/helperctl.sh" prepare-boot
+fi
+printf '%s\n' 'KaoriosHelper: INCOMPLETE_RUNTIME (control interface missing)' >&2
+exit 1

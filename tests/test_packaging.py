@@ -141,6 +141,25 @@ class TestPackaging(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(victim.read_text(), "preserve")
 
+    def test_boot_prepares_request_and_action_syncs_before_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            module = Path(tmp)
+            recorder = module / 'calls'
+            control = module / 'helperctl.sh'
+            control.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "${0%/*}/calls"\nexit "${CONTROL_EXIT:-0}"\n')
+            for name in ('post-fs-data.sh', 'action.sh'):
+                (module / name).write_text((MODULE_DIR / name).read_text())
+            boot = subprocess.run(['sh', str(module / 'post-fs-data.sh')], capture_output=True)
+            self.assertEqual(boot.returncode, 0, boot.stderr)
+            self.assertEqual(recorder.read_text().splitlines(), ['prepare-boot'])
+            action = subprocess.run(['sh', str(module / 'action.sh')], capture_output=True)
+            self.assertEqual(action.returncode, 0, action.stderr)
+            self.assertEqual(recorder.read_text().splitlines(), ['prepare-boot', 'config sync all', 'status'])
+            failed = subprocess.run(['sh', str(module / 'action.sh')], capture_output=True,
+                                    env=dict(os.environ, CONTROL_EXIT='7'))
+            self.assertEqual(failed.returncode, 7)
+            self.assertEqual(recorder.read_text().splitlines()[-1], 'config sync all')
+
     def test_packaging_excludes_runtime_data(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as out:
             import shutil

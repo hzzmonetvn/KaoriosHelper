@@ -7,6 +7,11 @@
 #include <sys/file.h>
 #include <cerrno>
 #include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <atomic>
+#include <cstdlib>
 #include "../../third_party/json/nlohmann/json.hpp"
 
 namespace kaorios {
@@ -30,6 +35,8 @@ public:
             close(dir_);
             fail("Configuration lock failed");
         }
+        try { recover(); }
+        catch (...) { close(lock_); close(dir_); throw; }
     }
     ~NativeStore() { if (lock_ >= 0) close(lock_); if (dir_ >= 0) close(dir_); }
     NativeStore(const NativeStore&) = delete;
@@ -45,25 +52,32 @@ public:
         }
         if (!S_ISREG(s.st_mode) || !trusted(s) || s.st_nlink != 1) fail("Untrusted configuration file");
     }
-    std::string read(const std::string &name, bool optional = false) {
+    bool exists(const std::string &name) {
+        check(name);
+        struct stat s{};
+        if (fstatat(dir_, name.c_str(), &s, AT_SYMLINK_NOFOLLOW) == 0) return true;
+        if (errno != ENOENT) fail("Target inspection failed");
+        return false;
+    }
+    std::string read(const std::string &name, bool optional = false, size_t limit = 16*1024*1024) {
         check(name);
         int fd = openat(dir_, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         if (fd < 0) { if (optional && errno == ENOENT) return ""; fail("Configuration read failed"); }
         struct stat s{};
-        if (fstat(fd, &s) || !S_ISREG(s.st_mode) || !trusted(s) || s.st_nlink != 1 || s.st_size > 16*1024*1024) {
+        if (fstat(fd, &s) || !S_ISREG(s.st_mode) || !trusted(s) || s.st_nlink != 1 || s.st_size < 0 || static_cast<uint64_t>(s.st_size) > limit) {
             close(fd); fail("Untrusted configuration file");
         }
         std::string out; char buf[8192]; ssize_t n;
         while ((n = ::read(fd, buf, sizeof(buf))) != 0) {
             if (n < 0) { if (errno == EINTR) continue; close(fd); fail("Configuration read failed"); }
             out.append(buf, n);
-            if (out.size() > 16*1024*1024) { close(fd); fail("Configuration too large"); }
+            if (out.size() > limit) { close(fd); fail("Configuration too large"); }
         }
         close(fd); return out;
     }
     void write(const std::string &name, const std::string &value) {
         check(name);
-        static unsigned counter = 0;
+        static std::atomic<unsigned> counter{0};
         std::string tmp; int fd = -1;
         for (unsigned i=0; i<100 && fd<0; ++i) {
             tmp = ".staging." + std::to_string(getpid()) + "." + std::to_string(++counter);
@@ -89,6 +103,79 @@ public:
         check(name);
         if (unlinkat(dir_, name.c_str(), 0) && errno != ENOENT) fail("Configuration removal failed");
         if (fsync(dir_)) fail("Directory sync failed");
+    }
+
+    using Changes = std::map<std::string, std::optional<std::string>>;
+    // The journal is the durable commit decision. Cooperating readers hold this
+    // lock and replay it before observing files; arbitrary unlocked readers do not.
+    void transaction(const Changes &changes) {
+        if (changes.empty()) return;
+        validateChanges(changes);
+        nlohmann::json entries = nlohmann::json::object();
+        for (const auto &[name, value] : changes) {
+            if (value) entries[name] = *value;
+            else entries[name] = nullptr;
+        }
+        const auto journal = nlohmann::json{{"schemaVersion", 1}, {"files", entries}}.dump();
+        if (journal.size() > journalLimit) fail("Configuration transaction too large");
+        write(journalName, journal);
+        apply(changes);
+    }
+private:
+    static constexpr const char *journalName = ".native-transaction.json";
+    static constexpr size_t journalLimit = 128*1024*1024;
+    static bool transactionLeaf(const std::string &name) {
+        for (const auto *filename : {"hma.json", "pif.json", "keybox.xml", "spoof.json", "kaorios.json"})
+            if (name == filename || name == std::string(filename) + ".lkg") return true;
+        for (const auto *engine : {"hma", "pif", "tee", "copg", "kaorios"})
+            for (const auto *suffix : {".stored_gen", ".requested_gen", ".request.json", ".reload_pending", ".verified", ".enabled", ".disabled"})
+                if (name == std::string(engine) + suffix) return true;
+        return false;
+    }
+    void validateChanges(const Changes &changes) {
+        if (changes.empty() || changes.size() > 64) fail("Invalid configuration transaction");
+        size_t total = 0;
+        for (const auto &[name, value] : changes) {
+            if (!transactionLeaf(name)) fail("Invalid transaction target");
+            check(name);
+            if (value) {
+                if (value->size() > 16*1024*1024) fail("Configuration too large");
+                total += value->size();
+            }
+        }
+        if (total > 32*1024*1024) fail("Configuration transaction too large");
+    }
+    void apply(const Changes &changes) {
+        size_t applied = 0;
+        for (const auto &[name, value] : changes) {
+#ifdef KAORIOS_TEST_FAULTS
+            const char *fault = std::getenv("KAORIOS_TEST_TX_STOP_AFTER");
+            if (fault && std::to_string(applied) == fault) _exit(86);
+#endif
+            if (value) write(name, *value);
+            else remove(name);
+            ++applied;
+        }
+        remove(journalName);
+    }
+    void recover() {
+        const auto text = read(journalName, true, journalLimit);
+        if (text.empty()) {
+            if (exists(journalName)) fail("Invalid configuration journal");
+            return;
+        }
+        const auto journal = nlohmann::json::parse(text, nullptr, false);
+        if (!journal.is_object() || journal.size() != 2 || !journal.contains("schemaVersion") ||
+            !journal["schemaVersion"].is_number_integer() || journal["schemaVersion"] != 1 ||
+            !journal.contains("files") || !journal["files"].is_object()) fail("Invalid configuration journal");
+        Changes changes;
+        for (auto it = journal["files"].begin(); it != journal["files"].end(); ++it) {
+            if (it.value().is_null()) changes[it.key()] = std::nullopt;
+            else if (it.value().is_string()) changes[it.key()] = it.value().get<std::string>();
+            else fail("Invalid configuration journal");
+        }
+        validateChanges(changes);
+        apply(changes);
     }
 };
 inline bool validateNativeJson(const std::string &engine, const std::string &text) {

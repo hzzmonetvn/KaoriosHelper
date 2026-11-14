@@ -6,8 +6,6 @@
 #include "hma_engine.hpp"
 #include "logging.hpp"
 #include "ack_protocol.hpp"
-#include <fstream>
-#include <sstream>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #include <fcntl.h>
@@ -57,17 +55,14 @@ void HmaEngine::onLoad(zygisk::Api *api, JNIEnv *env) {
 
 bool HmaEngine::loadConfig() {
     std::string config_path = data_dir_ + "/hma.json";
-    struct stat st{};
-    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
-        LOGW("HMA config missing or empty: %s", config_path.c_str());
+    RuntimeConfigSnapshot snapshot;
+    try {
+        snapshot = readRuntimeConfigSnapshot(data_dir_, "hma", "hma.json");
+    } catch (...) {
+        LOGW("HMA: Configuration snapshot unavailable");
         return false;
     }
-
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        LOGE("Failed to open HMA config: %s", config_path.c_str());
-        return false;
-    }
+    if (snapshot.bytes.empty()) return false;
 
     std::lock_guard<std::mutex> lock(config_mutex_);
     scope_map_.clear();
@@ -80,7 +75,7 @@ bool HmaEngine::loadConfig() {
     global_hidden_packages_.insert("org.apatch");
     global_hidden_packages_.insert("org.lsposed.manager");
 
-    std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    const std::string &content = snapshot.bytes;
     auto j = nlohmann::json::parse(content, nullptr, false);
     if (j.is_discarded() || !j.is_object()) {
         LOGE("HMA: Failed to parse %s as valid JSON", config_path.c_str());
@@ -100,25 +95,24 @@ bool HmaEngine::loadConfig() {
         }
     }
 
-    last_config_mtime_ = st.st_mtime;
-    config_json_snapshot_ = content;
+    config_snapshot_ = std::move(snapshot);
     config_loaded_ = true;
     LOGI("HMA config loaded: %zu scoped callers, %zu global hidden packages", scope_map_.size(), global_hidden_packages_.size());
     return true;
 }
 
 bool HmaEngine::reloadConfigIfNeeded() {
-    std::string config_path = data_dir_ + "/hma.json";
-    struct stat st{};
-    if (stat(config_path.c_str(), &st) != 0) {
+    RuntimeConfigSnapshot snapshot;
+    try {
+        snapshot = readRuntimeConfigSnapshot(data_dir_, "hma", "hma.json");
+    } catch (...) {
         return false;
     }
-
-    if (st.st_mtime != last_config_mtime_) {
-        LOGI("HMA config mtime changed, reloading...");
-        return loadConfig();
+    {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        if (config_loaded_ && config_snapshot_.sameIdentity(snapshot)) return true;
     }
-    return true;
+    return loadConfig();
 }
 
 bool HmaEngine::shouldHide(int calling_uid, const std::string &target_pkg) const {
@@ -362,12 +356,18 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
             config_loaded_ = loadConfig();
         }
 
+        RuntimeConfigSnapshot applied_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            applied_snapshot = config_snapshot_;
+        }
         // If DEX was injected, call its initialization hook with config snapshot
         if (dex_entrypoint_ && env_) {
             jmethodID initMid = env_->GetStaticMethodID(dex_entrypoint_, "init", "(Ljava/lang/String;)V");
             bool init_invoked = false;
+            bool snapshot_supplied = false;
             if (!env_->ExceptionCheck() && initMid) {
-                jstring j_cfg = env_->NewStringUTF(config_json_snapshot_.c_str());
+                jstring j_cfg = env_->NewStringUTF(applied_snapshot.bytes.c_str());
                 env_->CallStaticVoidMethod(dex_entrypoint_, initMid, j_cfg);
                 if (j_cfg) env_->DeleteLocalRef(j_cfg);
                 if (env_->ExceptionCheck()) {
@@ -376,6 +376,7 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
                 } else {
                     LOGI("HMA: ZygoteEntry.init(snapshot) executed successfully in system_server");
                     init_invoked = true;
+                    snapshot_supplied = true;
                 }
             } else {
                 if (env_->ExceptionCheck()) env_->ExceptionClear();
@@ -394,7 +395,7 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
                 }
             }
 
-            if (init_invoked) {
+            if (init_invoked && snapshot_supplied) {
                 int hook_state = 3; // STATE_ENTRYPOINT_EXECUTED
                 jmethodID getStateMid = env_->GetStaticMethodID(dex_entrypoint_, "getHookState", "()I");
                 if (!env_->ExceptionCheck() && getStateMid) {
@@ -405,9 +406,10 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
                 RuntimeAck ack;
                 ack.engine = "hma";
                 ack.processName = "system_server";
-                ack.pid = getpid();
-                ack.uid = 1000;
-                ack.configGeneration = 1;
+                if (!bindRuntimeAckToSnapshot(ack, applied_snapshot)) {
+                    LOGW("HMA: Runtime ACK withheld without current configuration identity");
+                    return;
+                }
                 ack.initResult = (hook_state >= 5) ? 0 : -1;
                 ack.eventType = (hook_state >= 8) ? AckEventType::HOOK_OBSERVED :
                                 ((hook_state >= 5) ? AckEventType::HOOK_INITIALIZED :

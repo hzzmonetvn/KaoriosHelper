@@ -11,6 +11,7 @@
 #include "tee_engine.hpp"
 #include "copg_engine.hpp"
 #include "ack_protocol.hpp"
+#include "../../core/config/runtime_snapshot.hpp"
 #include <unistd.h>
 #include <cstdlib>
 #include <cstring>
@@ -218,62 +219,40 @@ static void companion_handler(int client_socket) {
     } else if (command.rfind("ack:", 0) == 0) {
         // Safe privileged runtime acknowledgement submission
         std::string payload = command.substr(4);
-        auto j = nlohmann::json::parse(payload, nullptr, false);
-        if (!j.is_discarded() && j.is_object()) {
-            RuntimeAck ack;
-            if (RuntimeAck::fromJson(j, ack)) {
-                // Securely override PID & UID with peer credentials from kernel
-                ack.pid = target_pid;
-                ack.uid = cr.uid;
-
-                // Authenticate process name from /proc/<pid>/cmdline
-                char cmdline_path[64];
-                snprintf(cmdline_path, sizeof(cmdline_path), "/proc/%d/cmdline", target_pid);
-                int cmd_fd = open(cmdline_path, O_RDONLY | O_CLOEXEC);
-                if (cmd_fd >= 0) {
-                    char cmd_buf[256] = {0};
-                    ssize_t n = read(cmd_fd, cmd_buf, sizeof(cmd_buf) - 1);
-                    close(cmd_fd);
-                    if (n > 0) {
-                        cmd_buf[n] = '\0';
-                        ack.processName = std::string(cmd_buf);
-                    }
-                }
-
-                if (ack.timestamp == 0) {
-                    struct timespec ts{};
-                    clock_gettime(CLOCK_REALTIME, &ts);
-                    ack.timestamp = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
-                }
-
+        RuntimeAck ack;
+        if (parseRuntimeAck(payload, ack)) {
+                // Identity is evidence from the producer, not fields the companion
+                // may upgrade on its behalf. Compare it with kernel peer credentials.
                 std::string reason;
-                if (!validateRuntimeAck(ack, reason)) {
+                if (ack.pid != target_pid || ack.uid != cr.uid || !validateRuntimeAck(ack, reason) ||
+                    !runtimeAckHasLiveIdentity(ack)) {
                     LOGW("KaoriosHelper companion: rejected unauthorized runtime ack from pid=%d uid=%d (%s): %s",
                          target_pid, cr.uid, ack.processName.c_str(), reason.c_str());
                     result = -1;
                 } else {
-                    std::string runtime_dir = "/data/adb/modules/kaorioshelper/data/runtime";
-                    RuntimeAck prev_ack;
-                    if (readRuntimeAck(runtime_dir, ack.engine, prev_ack)) {
-                        if (ack.configGeneration < prev_ack.configGeneration && ack.configGeneration != 0) {
-                            LOGW("KaoriosHelper companion: rejected stale ack (gen %lu < prev gen %lu) for %s",
-                                 (unsigned long)ack.configGeneration, (unsigned long)prev_ack.configGeneration, ack.engine.c_str());
-                            result = -2;
-                            write(client_socket, &result, sizeof(result));
-                            close(client_socket);
-                            return;
-                        }
-                    }
-
-                    if (writeRuntimeAckDirect(runtime_dir, ack)) {
-                        LOGI("KaoriosHelper companion: authenticated and committed runtime ack for %s (%s, pid=%d, uid=%d, gen=%lu)",
-                             ack.engine.c_str(), ack.processName.c_str(), ack.pid, ack.uid, (unsigned long)ack.configGeneration);
-                        result = 0;
-                    } else {
-                        LOGW("KaoriosHelper companion: writeRuntimeAckDirect failed for %s", ack.engine.c_str());
+                    try {
+                        const std::string data = "/data/adb/modules/kaorioshelper/data";
+                        NativeStore store(data);
+                        const auto filename = ack.engine == "copg" ? "spoof.json" :
+                            (ack.engine == "tee" ? "keybox.xml" : ack.engine + ".json");
+                        const auto content = store.read(filename);
+                        const auto request = nlohmann::json::parse(store.read(ack.engine + ".request.json"), nullptr, false);
+                        const auto stored = store.read(ack.engine + ".stored_gen");
+                        const auto requested = store.read(ack.engine + ".requested_gen");
+                        const auto expected = std::to_string(ack.configGeneration) + "\n";
+                        const bool enabled = (ack.engine == "hma" || ack.engine == "pif")
+                            ? !store.exists(ack.engine + ".disabled") : store.exists(ack.engine + ".enabled");
+                        const bool valid = enabled && stored == expected && requested == expected &&
+                            request.is_object() && request.value("bootId", "") == runtimeAckBootId() &&
+                            request.contains("notBeforeMillis") && request["notBeforeMillis"].is_number_unsigned() &&
+                            ack.timestamp >= request["notBeforeMillis"].get<uint64_t>() &&
+                            runtimeAckMatchesCurrent(ack, ack.engine, ack.configGeneration, content, request.value("requestId", ""));
+                        if (valid && writeRuntimeAckDirect(data + "/runtime", ack)) result = 0;
+                        else result = -2;
+                    } catch (...) {
+                        result = -2;
                     }
                 }
-            }
         }
     } else {
         LOGW("KaoriosHelper companion: unrecognized command '%s'", command.c_str());

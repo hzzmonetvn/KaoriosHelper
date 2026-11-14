@@ -13,6 +13,7 @@
 #include <atomic>
 #include <sys/types.h>
 #include "engine.hpp"
+#include "../../core/config/runtime_snapshot.hpp"
 
 namespace kaorios {
 
@@ -84,7 +85,8 @@ private:
     JNIEnv *env_ = nullptr;
 
     mutable std::mutex config_mutex_;
-    time_t last_config_mtime_ = 0;
+    RuntimeConfigSnapshot config_snapshot_;
+    RuntimeConfigSnapshot applied_snapshot_;
 
     std::set<std::string> target_packages_;
     std::set<std::string> cpu_blacklist_;
@@ -101,7 +103,6 @@ private:
     size_t libraries_discovered_{0};
     size_t hooks_attempted_{0};
     size_t hooks_registered_{0};
-    uint64_t applied_generation_{0};
 
     void applyBuildSpoofing(const CopgDeviceInfo &info);
 };

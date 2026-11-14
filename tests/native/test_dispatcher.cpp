@@ -18,6 +18,7 @@
 #include "tee_engine.hpp"
 #include "copg_engine.hpp"
 #include "ack_protocol.hpp"
+#include "test_ack_protocol.hpp"
 #include <sys/stat.h>
 #include <sys/wait.h>
 
@@ -592,34 +593,35 @@ void test_ack_unprivileged_write_rejected(const std::string &dir) {
 void test_ack_transport_filesystem(const std::string &dir) {
     std::string runtime = dir + "/ack_transport";
     kaorios::RuntimeAck ack;
-    ack.engine = "pif";
-    ack.processName = "com.google.android.gms.unstable";
-    ack.pid = getpid();
-    ack.uid = getuid();
+    ack.engine = "copg";
+    assert(kaorios::bindRuntimeAckToCurrentProcess(ack, 1, "{}", std::string(32, 'a')));
     kaorios::RuntimeAck parsed;
+    ++ack.configGeneration;
     assert(kaorios::writeRuntimeAckDirect(runtime, ack));
-    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
+    assert(kaorios::readRuntimeAck(runtime, "copg", parsed));
     struct stat primary{}, compat{};
-    assert(stat((runtime + "/pif.ack.json").c_str(), &primary) == 0);
-    assert(stat((runtime + "/pif.json").c_str(), &compat) == 0);
+    assert(stat((runtime + "/copg.ack.json").c_str(), &primary) == 0);
+    assert(stat((runtime + "/copg.json").c_str(), &compat) == 0);
     assert(primary.st_ino == compat.st_ino);
-    fs::remove(runtime + "/pif.ack.json");
-    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
-    fs::create_symlink(runtime + "/pif.json", runtime + "/pif.ack.json");
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
-    fs::remove(runtime + "/pif.ack.json");
-    assert(mkfifo((runtime + "/pif.ack.json").c_str(), 0600) == 0);
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
-    fs::remove(runtime + "/pif.ack.json");
-    fs::create_directory(runtime + "/pif.ack.json");
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
-    fs::remove(runtime + "/pif.ack.json");
+    fs::remove(runtime + "/copg.ack.json");
+    assert(kaorios::readRuntimeAck(runtime, "copg", parsed));
+    fs::create_symlink(runtime + "/copg.json", runtime + "/copg.ack.json");
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
+    fs::remove(runtime + "/copg.ack.json");
+    assert(mkfifo((runtime + "/copg.ack.json").c_str(), 0600) == 0);
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
+    fs::remove(runtime + "/copg.ack.json");
+    fs::create_directory(runtime + "/copg.ack.json");
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
+    fs::remove(runtime + "/copg.ack.json");
+    ++ack.configGeneration;
     assert(kaorios::writeRuntimeAckDirect(runtime, ack));
-    chmod((runtime + "/pif.ack.json").c_str(), 0666);
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
-    chmod((runtime + "/pif.ack.json").c_str(), 0600);
-    std::ofstream(runtime + "/pif.ack.json") << std::string(65537, 'x');
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    chmod((runtime + "/copg.ack.json").c_str(), 0666);
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
+    chmod((runtime + "/copg.ack.json").c_str(), 0600);
+    std::ofstream(runtime + "/copg.ack.json") << std::string(65537, 'x');
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
+    ++ack.configGeneration;
     assert(kaorios::writeRuntimeAckDirect(runtime, ack));
     assert(!kaorios::readRuntimeAck(runtime, "../pif", parsed));
     fs::create_directory_symlink(runtime, dir + "/ack_link");
@@ -628,37 +630,41 @@ void test_ack_transport_filesystem(const std::string &dir) {
     assert(!kaorios::writeRuntimeAckDirect(dir + "/ack_link/child", ack));
     chmod(runtime.c_str(), 0777);
     assert(!kaorios::writeRuntimeAckDirect(runtime, ack));
-    assert(!kaorios::readRuntimeAck(runtime, "pif", parsed));
+    assert(!kaorios::readRuntimeAck(runtime, "copg", parsed));
     chmod(runtime.c_str(), 0755);
     // A legacy predictable staging path must never be opened or truncated.
     std::string victim = dir + "/ack_victim";
     std::ofstream(victim) << "unchanged";
-    fs::create_symlink(victim, runtime + "/pif.ack.json.tmp." + std::to_string(getpid()));
+    fs::create_symlink(victim, runtime + "/copg.ack.json.tmp." + std::to_string(getpid()));
+    ++ack.configGeneration;
     assert(kaorios::writeRuntimeAckDirect(runtime, ack));
     std::ifstream input(victim);
     std::string content;
     input >> content;
     assert(content == "unchanged");
+    // Concurrent publication of an identical event has exactly one winner.
+    fs::remove(runtime + "/copg.ack.json");
+    fs::remove(runtime + "/copg.json");
     pid_t writers[4];
     for (int i = 0; i < 4; ++i) {
         writers[i] = fork();
         assert(writers[i] >= 0);
         if (writers[i] == 0) {
-            ack.detail = std::to_string(i);
-            for (int n = 0; n < 20; ++n) {
-                if (!kaorios::writeRuntimeAckDirect(runtime, ack)) _exit(1);
-            }
-            _exit(0);
+            _exit(kaorios::writeRuntimeAckDirect(runtime, ack) ? 0 : 2);
         }
     }
+    unsigned committed = 0;
     for (pid_t writer : writers) {
         int status = 0;
         assert(waitpid(writer, &status, 0) == writer);
-        assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(WIFEXITED(status));
+        assert(WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 2);
+        committed += WEXITSTATUS(status) == 0;
     }
-    assert(kaorios::readRuntimeAck(runtime, "pif", parsed));
-    assert(stat((runtime + "/pif.ack.json").c_str(), &primary) == 0);
-    assert(stat((runtime + "/pif.json").c_str(), &compat) == 0);
+    assert(committed == 1);
+    assert(kaorios::readRuntimeAck(runtime, "copg", parsed));
+    assert(stat((runtime + "/copg.ack.json").c_str(), &primary) == 0);
+    assert(stat((runtime + "/copg.json").c_str(), &compat) == 0);
     assert(primary.st_ino == compat.st_ino);
     ack.detail.assign(65537, 'x');
     assert(!kaorios::writeRuntimeAckDirect(runtime, ack));
@@ -673,18 +679,15 @@ void test_ack_stale_discarded(const std::string &dir) {
     fs::create_directories(runtime_dir);
 
     kaorios::RuntimeAck ack;
-    ack.engine = "pif";
-    ack.processName = "com.google.android.gms.unstable";
-    ack.pid = getpid();
-    ack.uid = 10050;
-    ack.configGeneration = 1;
+    ack.engine = "copg";
     ack.initResult = 0;
     ack.eventType = kaorios::AckEventType::HOOK_INITIALIZED;
+    assert(kaorios::bindRuntimeAckToCurrentProcess(ack, 1, "{}", std::string(32, 'a')));
     assert(kaorios::writeRuntimeAckDirect(runtime_dir, ack) == true);
 
     uint64_t requested_gen = 2;
     kaorios::RuntimeAck read_ack;
-    assert(kaorios::readRuntimeAck(runtime_dir, "pif", read_ack) == true);
+    assert(kaorios::readRuntimeAck(runtime_dir, "copg", read_ack) == true);
     // Stale ack (gen 1 < req 2) must not be accepted as matching reload
     assert(read_ack.configGeneration < requested_gen);
     std::cout << "  [PASS] test_ack_stale_discarded" << std::endl;
@@ -808,6 +811,7 @@ int main() {
         std::cout << "========================================================" << std::endl;
 
         std::cout << "\n[SUITE 1/7] HMA Engine Tests (5 tests):" << std::endl;
+        test_ack_protocol_identity(temp_dir);
         test_ack_transport_filesystem(temp_dir);
         test_hma_positive(temp_dir);
         test_hma_negative(temp_dir);

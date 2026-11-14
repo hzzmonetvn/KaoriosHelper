@@ -5,8 +5,6 @@
 
 #include "copg_engine.hpp"
 #include "logging.hpp"
-#include <fstream>
-#include <sstream>
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <fcntl.h>
@@ -154,30 +152,21 @@ bool CopgEngine::executeCompanionCommand(const std::string &command) {
 
 bool CopgEngine::reloadConfigIfNeeded(bool force) {
     std::string config_path = data_dir_ + "/spoof.json";
-    struct stat st{};
-    if (stat(config_path.c_str(), &st) != 0 || st.st_size == 0) {
-        // Fallback to COPG.json if present
-        std::string fallback = data_dir_ + "/COPG.json";
-        if (stat(fallback.c_str(), &st) == 0 && st.st_size > 0) {
-            config_path = fallback;
-        } else {
-            return false;
-        }
+    RuntimeConfigSnapshot snapshot;
+    try {
+        snapshot = readRuntimeConfigSnapshot(data_dir_, "copg", "spoof.json");
+    } catch (...) {
+        LOGW("COPG: Configuration snapshot unavailable; retaining existing known-good config");
+        return false;
     }
+    if (snapshot.bytes.empty()) return false;
 
     std::lock_guard<std::mutex> lock(config_mutex_);
-    if (!force && st.st_mtime == last_config_mtime_) {
+    if (!force && config_snapshot_.sameIdentity(snapshot)) {
         return true;
     }
 
-    std::ifstream file(config_path);
-    if (!file.is_open()) {
-        return false;
-    }
-
-    std::stringstream buffer;
-    buffer << file.rdbuf();
-    std::string content = buffer.str();
+    const std::string &content = snapshot.bytes;
 
     auto j = nlohmann::json::parse(content, nullptr, false);
     if (j.is_discarded() || !j.is_object()) {
@@ -190,7 +179,7 @@ bool CopgEngine::reloadConfigIfNeeded(bool force) {
         LOGI("COPG: Feature globally disabled in %s", config_path.c_str());
         target_packages_.clear();
         package_configs_.clear();
-        last_config_mtime_ = st.st_mtime;
+        config_snapshot_ = std::move(snapshot);
         return true;
     }
 
@@ -311,7 +300,7 @@ bool CopgEngine::reloadConfigIfNeeded(bool force) {
     package_configs_ = std::move(new_package_configs);
     cpu_blacklist_ = std::move(new_cpu_blacklist);
     cpu_only_packages_ = std::move(new_cpu_only_packages);
-    last_config_mtime_ = st.st_mtime;
+    config_snapshot_ = std::move(snapshot);
 
     LOGI("COPG reloaded configuration: %zu target packages", target_packages_.size());
     return true;
@@ -431,6 +420,7 @@ void CopgEngine::preAppSpecialize(zygisk::AppSpecializeArgs *args, const std::st
     s_copg_active_instance = this;
     current_device_info_ = it->second.first;
     current_flags_ = it->second.second;
+    applied_snapshot_ = config_snapshot_;
 
     LOGI("COPG preAppSpecialize for target app: %s", process_name.c_str());
 
@@ -628,9 +618,7 @@ void CopgEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const 
     RuntimeAck ack;
     ack.engine = "copg";
     ack.processName = process_name;
-    ack.pid = getpid();
-    ack.uid = getuid();
-    ack.configGeneration = applied_generation_;
+    const bool ack_bound = bindRuntimeAckToSnapshot(ack, applied_snapshot_);
 
     if (getInterceptedCount() > 0) {
         ack.eventType = AckEventType::HOOK_OBSERVED;
@@ -649,7 +637,9 @@ void CopgEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const 
         ack.detail = "COPG targeted process loaded";
     }
 
-    if (api_) {
+    if (!ack_bound) {
+        LOGW("COPG: Runtime ACK withheld without current configuration identity");
+    } else if (api_) {
         int sock = api_->connectCompanion();
         if (sock >= 0) {
             std::string msg = "ack:" + ack.toJson().dump();

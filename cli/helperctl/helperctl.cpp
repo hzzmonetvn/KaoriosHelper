@@ -27,6 +27,9 @@
 #include <sys/types.h>
 #include <limits.h>
 #include <time.h>
+#include <sys/random.h>
+#include "../../core/config/settings_command.hpp"
+#include "../../core/config/settings_adapter.hpp"
 
 namespace fs = std::filesystem;
 
@@ -116,13 +119,7 @@ public:
             uint64_t gen = 0;
             if (f >> gen) return gen;
         }
-        // Default generation is 1 if configuration exists, 0 otherwise
-        std::string cfg_name = (engine == "tee") ? "keybox.xml" : ((engine == "copg") ? "spoof.json" : (engine + ".json"));
-        struct stat st{};
-        if (stat((data_dir_ + "/" + cfg_name).c_str(), &st) == 0 && st.st_size > 0) {
-            return 1;
-        }
-        return 0;
+        return 0; // Legacy payloads need explicit migration, not an invented generation.
     }
 
     void setStoredGeneration(const std::string &engine, uint64_t gen) {
@@ -173,315 +170,44 @@ public:
     }
 
     std::map<std::string, EngineStatus> getEngineStatuses() {
+        kaorios::NativeStore store(data_dir_);
+        for (const auto *engine : {"hma", "pif", "tee", "copg", "kaorios"}) {
+            const auto filename = configName(engine);
+            for (const auto &name : {filename, std::string(engine) + ".stored_gen", std::string(engine) + ".requested_gen",
+                    std::string(engine) + ".request.json", std::string(engine) + ".enabled", std::string(engine) + ".disabled",
+                    std::string(engine) + ".reload_pending", std::string(engine) + ".verified"}) store.check(name);
+        }
+        store.check("COPG.json");
         std::map<std::string, EngineStatus> res;
         struct stat st{};
-
-        // ── HMA ─────────────────────────────────────────────────────────────
-        EngineStatus hma;
-        hma.name = "hma";
-        hma.installed = true;
-        hma.enabled = (stat((data_dir_ + "/hma.disabled").c_str(), &st) != 0);
-        hma.pendingReload = (stat((data_dir_ + "/hma.reload_pending").c_str(), &st) == 0);
-        hma.storedGeneration = getStoredGeneration("hma");
-        hma.requestedGeneration = getRequestedGeneration("hma");
-        hma.appliedGeneration = 0;
-        hma.lastVerifiedTimestamp = getVerifiedTimestamp("hma");
-        hma.deviceVerified = (hma.lastVerifiedTimestamp > 0);
-
-        // Check classes.dex
-        bool dex_exists = (stat((data_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0) ||
-                          (stat((mod_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0);
-        hma.runtimeAvailable = dex_exists;
-
-        // Check hma.json
-        if (stat((data_dir_ + "/hma.json").c_str(), &st) == 0 && st.st_size > 0) {
-            std::ifstream f(data_dir_ + "/hma.json");
-            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            hma.configValid = kaorios::validateNativeJson("hma", content);
-            if (!hma.configValid) hma.lastError = "hma.json malformed JSON syntax";
-        } else {
-            hma.configValid = false;
-            hma.lastError = "hma.json configuration missing or empty";
-        }
-
-        kaorios::RuntimeAck hma_ack;
-        bool has_hma_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "hma", hma_ack);
-        if (has_hma_ack) {
-            hma.appliedGeneration = hma_ack.configGeneration;
-            hma.lastRuntimeEvent = kaorios::ackEventTypeToString(hma_ack.eventType);
-            hma.lastRuntimeTimestamp = hma_ack.timestamp;
-            hma.processLoaded = (hma_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
-            hma.hookRegistered = (hma_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
-            hma.runtimeObserved = (hma_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
-        }
-
-        if (!hma.enabled) {
-            hma.status = "DISABLED";
-            hma.hookInitialized = "DISABLED";
-            hma.lastError = "Engine explicitly disabled via hma.disabled marker";
-            hma.details = "In-process system_server package protection (disabled)";
-        } else if (!hma.configValid) {
-            hma.status = "NOT_CONFIGURED";
-            hma.hookInitialized = "NOT_INITIALIZED";
-            hma.details = "hma.json configuration missing or malformed";
-        } else if (!hma.runtimeAvailable) {
-            hma.status = "INCOMPLETE_RUNTIME";
-            hma.hookInitialized = "INCOMPLETE_RUNTIME";
-            hma.lastError = "classes.dex missing: upstream HMA DEX payload not bundled";
-            hma.details = "system_server in-memory DEX loader waiting for classes.dex";
-        } else if (hma.pendingReload) {
-            hma.status = "PENDING_RELOAD";
-            hma.hookInitialized = (has_hma_ack && hma_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
-            hma.details = "HMA DEX present; pending system_server restart";
-        } else if (has_hma_ack) {
-            if (hma_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
-                hma.status = "ACTIVE";
-                hma.hookInitialized = "INITIALIZED";
-                hma.lastError = "";
-                hma.details = "system_server framework-level package query filtering observed at runtime";
-            } else if (hma_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                hma.status = "INITIALIZED";
-                hma.hookInitialized = "INITIALIZED";
-                hma.lastError = "";
-                hma.details = "system_server HMA hooks initialized; awaiting query interception observation";
-            } else if (hma_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
-                hma.status = "NOT_VERIFIED";
-                hma.hookInitialized = "NOT_INITIALIZED";
-                hma.details = "system_server HMA hooks registered; awaiting specialization";
-            } else if (hma_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
-                hma.status = "NOT_VERIFIED";
-                hma.hookInitialized = "NOT_INITIALIZED";
-                hma.details = "system_server process loaded; awaiting hook execution";
-            } else {
-                hma.status = "ERROR";
-                hma.hookInitialized = "FAILED";
-                hma.lastError = hma_ack.detail;
-                hma.details = "HMA hook failure: " + hma_ack.detail;
-            }
-        } else {
-            hma.status = "NOT_VERIFIED";
-            hma.hookInitialized = "NOT_INITIALIZED";
-            hma.lastError = "Runtime hook acknowledgement pending system_server specialization";
-            hma.details = "HMA configured with DEX; awaiting system_server execution";
-        }
-        res["hma"] = hma;
-
-        // ── PIF ─────────────────────────────────────────────────────────────
-        EngineStatus pif;
-        pif.name = "pif";
-        pif.installed = true;
-        pif.enabled = (stat((data_dir_ + "/pif.disabled").c_str(), &st) != 0);
-        pif.pendingReload = (stat((data_dir_ + "/pif.reload_pending").c_str(), &st) == 0);
-        pif.storedGeneration = getStoredGeneration("pif");
-        pif.requestedGeneration = getRequestedGeneration("pif");
-        pif.appliedGeneration = 0;
-        pif.lastVerifiedTimestamp = getVerifiedTimestamp("pif");
-        pif.deviceVerified = (pif.lastVerifiedTimestamp > 0);
-        pif.runtimeAvailable = true;
-
-        if (stat((data_dir_ + "/pif.json").c_str(), &st) == 0 && st.st_size > 0) {
-            std::ifstream f(data_dir_ + "/pif.json");
-            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            pif.configValid = kaorios::validateNativeJson("pif", content);
-            if (!pif.configValid) pif.lastError = "pif.json malformed JSON syntax";
-        } else {
-            pif.configValid = false;
-            pif.lastError = "pif.json configuration missing or empty";
-        }
-
-        kaorios::RuntimeAck pif_ack;
-        bool has_pif_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "pif", pif_ack);
-        if (has_pif_ack) {
-            pif.appliedGeneration = pif_ack.configGeneration;
-            pif.lastRuntimeEvent = kaorios::ackEventTypeToString(pif_ack.eventType);
-            pif.lastRuntimeTimestamp = pif_ack.timestamp;
-            pif.processLoaded = (pif_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
-            pif.hookRegistered = (pif_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
-            pif.runtimeObserved = (pif_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
-        }
-
-        if (!pif.enabled) {
-            pif.status = "DISABLED";
-            pif.hookInitialized = "DISABLED";
-            pif.lastError = "Engine explicitly disabled via pif.disabled marker";
-            pif.details = "Play Integrity Fix property spoofing (disabled)";
-        } else if (!pif.configValid) {
-            pif.status = "NOT_CONFIGURED";
-            pif.hookInitialized = "NOT_INITIALIZED";
-            pif.details = "pif.json configuration missing or malformed";
-        } else if (pif.pendingReload) {
-            pif.status = "PENDING_RELOAD";
-            pif.hookInitialized = (has_pif_ack && pif_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
-            pif.details = "PIF configuration updated; pending target reload";
-        } else if (has_pif_ack) {
-            if (pif_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
-                pif.status = "ACTIVE";
-                pif.hookInitialized = "INITIALIZED";
-                pif.lastError = "";
-                pif.details = "ByteDance ShadowHook native libc property hook active and property queries observed";
-            } else if (pif_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                pif.status = "INITIALIZED";
-                pif.hookInitialized = "INITIALIZED";
-                pif.lastError = "";
-                pif.details = "ByteDance ShadowHook native libc hook registered; awaiting property query observation";
-            } else if (pif_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
-                pif.status = "NOT_VERIFIED";
-                pif.hookInitialized = "NOT_INITIALIZED";
-                pif.details = "PIF hook registered in target process; awaiting specialization";
-            } else if (pif_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
-                pif.status = "NOT_VERIFIED";
-                pif.hookInitialized = "NOT_INITIALIZED";
-                pif.details = "Target process loaded; awaiting hook execution";
-            } else {
-                pif.status = "ERROR";
-                pif.hookInitialized = "FAILED";
-                pif.lastError = pif_ack.detail;
-                pif.details = "PIF hook failure: " + pif_ack.detail;
-            }
-        } else {
-            pif.status = "NOT_VERIFIED";
-            pif.hookInitialized = "NOT_INITIALIZED";
-            pif.lastError = "Runtime hook acknowledgement pending target process specialization";
-            pif.details = "ByteDance ShadowHook property interceptor configured";
-        }
-        res["pif"] = pif;
-
-        // ── TEE ─────────────────────────────────────────────────────────────
-        EngineStatus tee;
-        tee.name = "tee";
-        tee.installed = true;
-        tee.enabled = (stat((data_dir_ + "/tee.enabled").c_str(), &st) == 0);
-        tee.pendingReload = (stat((data_dir_ + "/tee.reload_pending").c_str(), &st) == 0);
-        tee.storedGeneration = getStoredGeneration("tee");
-        tee.requestedGeneration = getRequestedGeneration("tee");
-        tee.appliedGeneration = 0;
-        tee.lastVerifiedTimestamp = 0;
-        tee.deviceVerified = false;
-        tee.runtimeAvailable = false; // Keystore2 ptrace/AIDL integration is unbundled
-        tee.runtimeObserved = false;
-        tee.processLoaded = false;
-        tee.hookRegistered = false;
-
-        if (stat((data_dir_ + "/keybox.xml").c_str(), &st) == 0 && st.st_size > 0) {
-            std::ifstream f(data_dir_ + "/keybox.xml");
-            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            tee.configValid = validateXmlSyntax(content);
-            if (!tee.configValid) tee.lastError = "keybox.xml invalid XML structure";
-        } else {
-            tee.configValid = false;
-            tee.lastError = "keybox.xml missing or empty";
-        }
-
-        if (!tee.enabled) {
-            tee.status = "DISABLED";
-            tee.hookInitialized = "DISABLED";
-            tee.lastError = "Keystore2 system daemon interception runtime unavailable; engine disabled";
-            tee.details = "Hardware Keystore2 / KeyMint attestation simulation (disabled)";
-        } else if (!tee.configValid) {
-            tee.status = "NOT_CONFIGURED";
-            tee.hookInitialized = "INCOMPLETE_RUNTIME";
-            tee.details = "tee.enabled active but keybox.xml missing or invalid";
-        } else {
-            tee.status = "INCOMPLETE_RUNTIME";
-            tee.hookInitialized = "INCOMPLETE_RUNTIME";
-            tee.lastError = "Keystore2 system daemon interception runtime unavailable";
-            tee.details = "Keybox XML structure validated, but Keystore2 daemon ptrace/AIDL is not bundled";
-        }
-        res["tee"] = tee;
-
-        // ── COPG ────────────────────────────────────────────────────────────
-        EngineStatus copg;
-        copg.name = "copg";
-        copg.installed = true;
-        copg.enabled = (stat((data_dir_ + "/copg.enabled").c_str(), &st) == 0);
-        copg.pendingReload = (stat((data_dir_ + "/copg.reload_pending").c_str(), &st) == 0);
-        copg.storedGeneration = getStoredGeneration("copg");
-        copg.requestedGeneration = getRequestedGeneration("copg");
-        copg.appliedGeneration = 0;
-        copg.lastVerifiedTimestamp = getVerifiedTimestamp("copg");
-        copg.deviceVerified = (copg.lastVerifiedTimestamp > 0);
-        copg.runtimeAvailable = true;
-
-        std::string copg_file = data_dir_ + "/spoof.json";
-        if (stat(copg_file.c_str(), &st) != 0 || st.st_size == 0) {
-            copg_file = data_dir_ + "/COPG.json";
-        }
-        if (stat(copg_file.c_str(), &st) == 0 && st.st_size > 0) {
-            std::ifstream f(copg_file);
-            std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-            copg.configValid = kaorios::validateNativeJson("copg", content);
-            if (!copg.configValid) copg.lastError = "spoof.json malformed JSON syntax";
-        } else {
-            copg.configValid = false;
-            copg.lastError = "spoof.json missing or empty";
-        }
-
-        kaorios::RuntimeAck copg_ack;
-        bool has_copg_ack = kaorios::readRuntimeAck(data_dir_ + "/runtime", "copg", copg_ack);
-        if (has_copg_ack) {
-            copg.appliedGeneration = copg_ack.configGeneration;
-            copg.lastRuntimeEvent = kaorios::ackEventTypeToString(copg_ack.eventType);
-            copg.lastRuntimeTimestamp = copg_ack.timestamp;
-            copg.processLoaded = (copg_ack.eventType >= kaorios::AckEventType::PROCESS_LOADED);
-            copg.hookRegistered = (copg_ack.eventType >= kaorios::AckEventType::HOOK_REGISTERED);
-            copg.runtimeObserved = (copg_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED);
-        }
-
-        if (!copg.enabled) {
-            copg.status = "DISABLED";
-            copg.hookInitialized = "DISABLED";
-            copg.lastError = "Engine disabled (copg.enabled marker absent)";
-            copg.details = "Game profile and device identity virtualization (disabled)";
-        } else if (!copg.configValid) {
-            copg.status = "NOT_CONFIGURED";
-            copg.hookInitialized = "NOT_INITIALIZED";
-            copg.details = "copg.enabled active but spoof.json missing or empty";
-        } else if (copg.pendingReload) {
-            copg.status = "PENDING_RELOAD";
-            copg.hookInitialized = (has_copg_ack && copg_ack.eventType >= kaorios::AckEventType::HOOK_INITIALIZED) ? "INITIALIZED" : "NOT_VERIFIED";
-            copg.details = "COPG configuration updated; pending game reload";
-        } else if (has_copg_ack) {
-            if (copg_ack.eventType == kaorios::AckEventType::HOOK_OBSERVED) {
-                copg.status = "ACTIVE";
-                copg.hookInitialized = "INITIALIZED";
-                copg.lastError = "";
-                copg.details = "Per-app Build and PLT property spoofing active and verified in target runtime";
-            } else if (copg_ack.eventType == kaorios::AckEventType::HOOK_INITIALIZED) {
-                copg.status = "INITIALIZED";
-                copg.hookInitialized = "INITIALIZED";
-                copg.lastError = "";
-                copg.details = "COPG hooks initialized; awaiting on-device target queries";
-            } else if (copg_ack.eventType == kaorios::AckEventType::HOOK_REGISTERED) {
-                copg.status = "NOT_VERIFIED";
-                copg.hookInitialized = "NOT_INITIALIZED";
-                copg.details = "COPG hooks registered; awaiting specialization";
-            } else if (copg_ack.eventType == kaorios::AckEventType::PROCESS_LOADED) {
-                copg.status = "NOT_VERIFIED";
-                copg.hookInitialized = "NOT_INITIALIZED";
-                copg.details = "Target process loaded; awaiting hook execution";
-            } else {
-                copg.status = "ERROR";
-                copg.hookInitialized = "FAILED";
-                copg.lastError = copg_ack.detail;
-                copg.details = "COPG hook failure: " + copg_ack.detail;
-            }
-        } else {
-            copg.status = "NOT_VERIFIED";
-            copg.hookInitialized = "NOT_INITIALIZED";
-            copg.lastError = "Runtime hook acknowledgement pending target app specialization";
-            copg.details = "Game profile and device identity virtualization configured";
-        }
-        res["copg"] = copg;
-
-        // Runtime evidence is not external device verification. Legacy marker files
-        // deliberately confer no trust. Only current, successful ACKs imply progress.
-        for (auto &[name, s] : res) {
+        const bool dexExists = (stat((data_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0) ||
+            (stat((mod_dir_ + "/classes.dex").c_str(), &st) == 0 && st.st_size > 0);
+        // Configuration and metadata come from one recovered, locked view.
+        // Legacy evidence remains diagnostic only; readiness is not device proof.
+        for (const auto *engine : {"hma", "pif", "tee", "copg", "kaorios"}) {
+            const std::string name(engine);
+            auto &s = res[name];
+            s.name = name;
+            s.enabled = name != "kaorios" && ((name == "hma" || name == "pif")
+                ? !store.exists(name + ".disabled") : store.exists(name + ".enabled"));
+            s.runtimeAvailable = name == "pif" || name == "copg" || (name == "hma" && dexExists);
             s.deviceVerified = false;
             s.lastVerifiedTimestamp = 0;
+            s.storedGeneration = parseGeneration(store.read(name + ".stored_gen", true));
+            s.requestedGeneration = parseGeneration(store.read(name + ".requested_gen", true));
+            const auto content = store.read(configName(name), true);
+            s.configValid = validConfig(name, content);
+            s.pendingReload = store.exists(name + ".reload_pending");
             kaorios::RuntimeAck ack;
             bool hasAck = kaorios::readRuntimeAck(data_dir_ + "/runtime", name, ack);
-            bool current = hasAck && ack.engine == name && ack.configGeneration == s.storedGeneration &&
-                ack.configGeneration == s.requestedGeneration && s.storedGeneration > 0;
+            const auto request = nlohmann::json::parse(store.read(name + ".request.json", true), nullptr, false);
+            const auto token = request.is_object() && request.contains("requestId") && request["requestId"].is_string()
+                ? request["requestId"].get<std::string>() : "";
+            bool current = s.enabled && s.configValid && s.runtimeAvailable && hasAck &&
+                s.storedGeneration == s.requestedGeneration &&
+                validRequest(request) &&
+                ack.timestamp >= request["notBeforeMillis"].get<uint64_t>() &&
+                kaorios::runtimeAckMatchesCurrent(ack, name, s.storedGeneration, content, token);
             using E = kaorios::AckEventType;
             bool initialized = current && ack.initResult == 0 && ack.errorCode == 0 &&
                 (ack.eventType == E::HOOK_INITIALIZED || ack.eventType == E::HOOK_OBSERVED);
@@ -489,19 +215,48 @@ public:
             s.hookRegistered = s.processLoaded && (ack.eventType == E::HOOK_REGISTERED || initialized);
             s.runtimeObserved = initialized && ack.eventType == E::HOOK_OBSERVED;
             s.appliedGeneration = initialized ? ack.configGeneration : 0;
-            if (name == "tee" || !s.enabled || !s.configValid || !s.runtimeAvailable) continue;
+            s.lastRuntimeEvent = hasAck ? kaorios::ackEventTypeToString(ack.eventType) : "NONE";
+            s.lastRuntimeTimestamp = hasAck ? ack.timestamp : 0;
+            if (name == "kaorios") {
+                s.status = s.configValid ? "INCOMPLETE_RUNTIME" : "NOT_CONFIGURED";
+                s.hookInitialized = "INCOMPLETE_RUNTIME";
+                s.details = "Configuration storage available; Kaorios runtime backend not implemented";
+                continue;
+            }
+            if (!s.enabled) {
+                s.status = "DISABLED";
+                s.hookInitialized = "DISABLED";
+                s.details = "Desired enablement is off; existing processes may still require restart";
+                continue;
+            }
+            if (!s.configValid) {
+                s.status = "NOT_CONFIGURED";
+                s.hookInitialized = "NOT_INITIALIZED";
+                s.details = "Canonical configuration missing or invalid; legacy payloads require explicit migration";
+                continue;
+            }
+            if (!s.runtimeAvailable) {
+                s.status = "INCOMPLETE_RUNTIME";
+                s.hookInitialized = "INCOMPLETE_RUNTIME";
+                s.details = name == "hma" ? "HMA classes.dex payload missing" : "TEE runtime backend not implemented";
+                continue;
+            }
             s.hookInitialized = initialized ? "INITIALIZED" : "NOT_INITIALIZED";
             s.pendingReload = !initialized;
             if (current && (ack.eventType == E::APPLY_FAILED || ack.initResult != 0 || ack.errorCode != 0)) {
-                s.status = "FAILED"; s.hookInitialized = "FAILED"; s.lastError = ack.detail;
+                s.status = "FAILED"; s.hookInitialized = "FAILED";
+                s.lastError = "Runtime reported configuration application failure";
+                s.details = "Current process reported failure; retry or restart remains pending";
             } else if (initialized) {
-                s.status = s.runtimeObserved ? "DEVICE_UNVERIFIED" : "READY"; s.lastError.clear();
+                s.status = s.runtimeObserved ? "DEVICE_UNVERIFIED" : "READY";
+                s.lastError.clear();
+                s.details = s.runtimeObserved ? "Current process observed; physical-device verification pending"
+                    : "Current process initialized; runtime observation pending";
             } else {
                 s.status = "PENDING_RELOAD";
-                s.details = hasAck && ack.engine == name &&
-                    (ack.configGeneration != s.storedGeneration || ack.configGeneration != s.requestedGeneration)
-                    ? "Runtime snapshot-generation acknowledgement unsupported by current engine"
-                    : "Awaiting successful runtime ACK for stored/requested generation";
+                s.lastError.clear();
+                s.details = s.storedGeneration == 0 ? "Legacy configuration requires explicit migration"
+                    : "Awaiting current boot/process/configuration/request acknowledgement";
             }
         }
         return res;
@@ -669,7 +424,9 @@ public:
                 {"protocolVersion", 1}, {"statusSchemaVersion", 1},
                 {"capabilities", {
                     {"configSet", true}, {"configValidate", true},
-                    {"configRollback", true}, {"settingsGlobalSync", false},
+                    {"configRollback", true}, {"settingsGlobalSync", true},
+                    {"configMigration", true}, {"recoverableConfigTransactions", true},
+                    {"runtimeAckV2", true},
                     {"atomicMultiFileSnapshot", false}, {"redactedConfigRead", false},
                     {"structuredMutationErrors", false}, {"deviceVerification", false},
                     {"screenCapture", false}
@@ -682,40 +439,45 @@ public:
         return 0;
     }
 
-    int cmdEnable(const std::string &engine) {
-        std::error_code ec;
-        fs::create_directories(data_dir_, ec);
-        if (engine == "tee" || engine == "copg") {
-            std::ofstream(data_dir_ + "/" + engine + ".enabled").close();
-            std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-        } else if (engine == "hma" || engine == "pif") {
-            fs::remove(data_dir_ + "/" + engine + ".disabled", ec);
-            std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-        } else {
-            std::cerr << "Unknown engine: " << engine << " (valid: hma, pif, tee, copg)\n";
+    int cmdEnable(const std::string &engine) { return cmdToggle(engine, true); }
+    int cmdDisable(const std::string &engine) { return cmdToggle(engine, false); }
+
+    int cmdToggle(const std::string &engine, bool enabled) {
+        if (engine != "hma" && engine != "pif" && engine != "tee" && engine != "copg") {
+            std::cerr << "Unknown runtime engine\n";
             return 1;
         }
-        updateStatusJson();
-        std::cout << "Engine '" << engine << "' enabled (reload pending).\n";
-        return 0;
+        try {
+            kaorios::NativeStore store(data_dir_);
+            kaorios::NativeStore::Changes changes;
+            const bool defaultOn = engine == "hma" || engine == "pif";
+            const auto marker = engine + (defaultOn ? ".disabled" : ".enabled");
+            changes[marker] = enabled != defaultOn ? std::optional<std::string>("") : std::nullopt;
+            stageRequest(changes, engine, parseGeneration(store.read(engine + ".stored_gen", true)));
+            store.transaction(changes);
+            std::cout << "PENDING: Desired enablement recorded; restart may be required.\n";
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
-    int cmdDisable(const std::string &engine) {
-        std::error_code ec;
-        fs::create_directories(data_dir_, ec);
-        if (engine == "tee" || engine == "copg") {
-            fs::remove(data_dir_ + "/" + engine + ".enabled", ec);
-            std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-        } else if (engine == "hma" || engine == "pif") {
-            std::ofstream(data_dir_ + "/" + engine + ".disabled").close();
-            std::ofstream(data_dir_ + "/" + engine + ".reload_pending").close();
-        } else {
-            std::cerr << "Unknown engine: " << engine << " (valid: hma, pif, tee, copg)\n";
-            return 1;
-        }
-        updateStatusJson();
-        std::cout << "Engine '" << engine << "' disabled (reload pending).\n";
-        return 0;
+    int cmdPrepareBoot() {
+        try {
+            kaorios::NativeStore store(data_dir_);
+            kaorios::NativeStore::Changes changes;
+            for (const auto *engine : {"hma", "pif", "tee", "copg"}) {
+                const std::string name(engine);
+                const auto generation = parseGeneration(store.read(name + ".stored_gen", true));
+                if (generation == 0) continue; // Legacy payloads still need explicit migration.
+                if (!validConfig(name, store.read(configName(name), true)))
+                    throw std::runtime_error("Boot configuration validation failed");
+                const auto request = nlohmann::json::parse(store.read(name + ".request.json", true), nullptr, false);
+                if (parseGeneration(store.read(name + ".requested_gen", true)) == generation && validRequest(request)) continue;
+                stageRequest(changes, name, generation);
+            }
+            store.transaction(changes);
+            std::cout << "Boot requests prepared; runtime acknowledgement pending\n";
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
     int cmdReload(const std::string &engine) {
@@ -731,13 +493,13 @@ public:
 
         try {
             kaorios::NativeStore store(data_dir_);
+            kaorios::NativeStore::Changes changes;
             for (const auto &eng : target_engines) {
-                uint64_t gen = getStoredGeneration(eng);
-                store.write(eng + ".requested_gen", std::to_string(gen) + "\n");
-                store.write(eng + ".reload_pending", "");
-                store.remove(eng + ".verified");
-                std::cout << "PENDING: Engine '" << eng << "' reload requested (generation " << gen << ").\n";
+                const auto gen = parseGeneration(store.read(eng + ".stored_gen", true));
+                stageRequest(changes, eng, gen);
             }
+            store.transaction(changes);
+            std::cout << "PENDING: Reload request recorded; existing processes may require restart.\n";
             return 0;
         } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
@@ -807,6 +569,64 @@ public:
         return content;
     }
 
+    static uint64_t parseGeneration(const std::string &text) {
+        if (text.empty()) return 0;
+        if (text[0] < '0' || text[0] > '9') throw std::runtime_error("Invalid configuration generation");
+        size_t end = 0;
+        const auto generation = std::stoull(text, &end);
+        if (text.find_first_not_of(" \r\n\t", end) != std::string::npos) throw std::runtime_error("Invalid configuration generation");
+        return generation;
+    }
+
+    static bool validRequest(const nlohmann::json &request) {
+        if (!request.is_object() || !request.contains("requestId") || !request["requestId"].is_string() ||
+            !request.contains("bootId") || !request["bootId"].is_string() ||
+            !request.contains("notBeforeMillis") || !request["notBeforeMillis"].is_number_unsigned()) return false;
+        const auto token = request["requestId"].get<std::string>();
+        if (token.size() != 32 || token.find_first_not_of("0123456789abcdef") != std::string::npos) return false;
+        const auto notBefore = request["notBeforeMillis"].get<uint64_t>();
+        return request["bootId"].get<std::string>() == kaorios::runtimeAckBootId() &&
+            notBefore > 0 && notBefore <= kaorios::runtimeAckNowMillis();
+    }
+
+    static void stageRequest(kaorios::NativeStore::Changes &changes, const std::string &engine, uint64_t generation) {
+        unsigned char entropy[16];
+        size_t offset = 0;
+        while (offset < sizeof(entropy)) {
+            ssize_t n = getrandom(entropy + offset, sizeof(entropy) - offset, 0);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) throw std::runtime_error("Runtime request identity unavailable");
+            offset += static_cast<size_t>(n);
+        }
+        static constexpr char hex[] = "0123456789abcdef";
+        std::string token;
+        for (unsigned char byte : entropy) { token += hex[byte >> 4]; token += hex[byte & 15]; }
+        const auto boot = kaorios::runtimeAckBootId();
+        const auto now = kaorios::runtimeAckNowMillis();
+        if (boot.empty() || now == 0) throw std::runtime_error("Runtime boot identity unavailable");
+        changes[engine + ".request.json"] = nlohmann::json{{"requestId", token}, {"bootId", boot}, {"notBeforeMillis", now}}.dump();
+        changes[engine + ".requested_gen"] = std::to_string(generation) + "\n";
+        changes[engine + ".reload_pending"] = "";
+        changes[engine + ".verified"] = std::nullopt;
+    }
+
+    static uint64_t stageConfig(kaorios::NativeStore &store, kaorios::NativeStore::Changes &changes,
+            const std::string &engine, const std::string &content, bool rollback = false) {
+        const auto filename = configName(engine);
+        for (const auto &leaf : {filename, filename + ".lkg", engine + ".stored_gen", engine + ".requested_gen",
+                engine + ".request.json", engine + ".reload_pending", engine + ".verified"}) store.check(leaf);
+        if (!validConfig(engine, content)) throw std::runtime_error("Configuration validation failed");
+        const auto previous = store.read(filename, true);
+        auto gen = parseGeneration(store.read(engine + ".stored_gen", true));
+        if (gen == UINT64_MAX) throw std::runtime_error("Generation exhausted");
+        ++gen;
+        if (!rollback && validConfig(engine, previous)) changes[filename + ".lkg"] = previous;
+        changes[filename] = content;
+        changes[engine + ".stored_gen"] = std::to_string(gen) + "\n";
+        stageRequest(changes, engine, gen);
+        return gen;
+    }
+
     int publishConfig(const std::string &engine, const std::string &src_path, bool rollback) {
         try {
             const auto filename = configName(engine);
@@ -814,28 +634,10 @@ public:
             std::string content;
             if (rollback) content = store.read(filename + ".lkg");
             else content = readConfigSource(src_path);
-            if (!validConfig(engine, content)) throw std::runtime_error("Configuration validation failed");
-            const auto previous = store.read(filename, true);
+            kaorios::NativeStore::Changes changes;
             // Set retains full replacement semantics, including deliberate field removal.
-            std::string generation = store.read(engine + ".stored_gen", true);
-            uint64_t gen = previous.empty() ? 0 : 1;
-            if (!generation.empty()) {
-                size_t end = 0;
-                if (generation[0] < '0' || generation[0] > '9') throw std::runtime_error("Invalid stored generation");
-                gen = std::stoull(generation, &end);
-                if (generation.find_first_not_of(" \r\n\t", end) != std::string::npos) throw std::runtime_error("Invalid stored generation");
-            }
-            if (gen == UINT64_MAX) throw std::runtime_error("Generation exhausted");
-            ++gen;
-            for (const auto &name : {filename, filename + ".lkg", engine + ".stored_gen", engine + ".requested_gen", engine + ".verified", engine + ".reload_pending"}) store.check(name);
-            if (!rollback && validConfig(engine, previous)) store.write(filename + ".lkg", previous);
-            // Metadata is published first: interrupted writes fail closed as pending,
-            // never leaving the previous ACK current for newly published content.
-            store.remove(engine + ".verified");
-            store.write(engine + ".reload_pending", "");
-            store.write(engine + ".requested_gen", std::to_string(gen) + "\n");
-            store.write(engine + ".stored_gen", std::to_string(gen) + "\n");
-            store.write(filename, content);
+            const auto gen = stageConfig(store, changes, engine, content, rollback);
+            store.transaction(changes);
             std::cout << "Configuration published: " << filename << " (generation " << gen << ").\n";
             return 0;
         } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
@@ -856,9 +658,53 @@ public:
     }
 
     int cmdConfigSync(const std::string &engine) {
-        if (engine != "all") { try { configName(engine); } catch (...) { return 1; } }
-        std::cerr << "Settings.Global sync unsupported: repository defines no native-config-to-ROM Settings.Global mapping; no settings were changed.\n";
-        return 1;
+        try {
+            const auto keys = kaorios::settingsKeys(engine);
+            if (keys.empty()) throw std::runtime_error("Invalid synchronization engine");
+            const auto settings = kaorios::captureGlobalSettings(keys);
+            kaorios::NativeStore store(data_dir_);
+            kaorios::NativeStore::Changes changes;
+            const std::vector<std::string> engines = engine == "all"
+                ? std::vector<std::string>{"pif", "tee", "copg", "hma", "kaorios"}
+                : std::vector<std::string>{engine};
+            std::vector<std::string> changed;
+            for (const auto &name : engines) {
+                const auto existing = store.read(configName(name), true);
+                const auto adapted = kaorios::adaptSettings(name, existing, settings);
+                if (!adapted) continue;
+                stageConfig(store, changes, name, *adapted);
+                changed.push_back(name);
+            }
+            store.transaction(changes);
+            for (const auto &name : changed) std::cout << name << ": stored; runtime application pending\n";
+            if (changed.empty()) std::cout << "No configuration changes\n";
+            return 0;
+        } catch (const std::exception &e) {
+            std::cerr << "Synchronization failed: " << e.what() << "; publication may require journal recovery\n";
+            return 1;
+        }
+    }
+
+    int cmdConfigMigrate(const std::string &engine) {
+        try {
+            const std::vector<std::string> engines = engine == "all"
+                ? std::vector<std::string>{"pif", "tee", "copg", "hma", "kaorios"}
+                : std::vector<std::string>{engine};
+            kaorios::NativeStore store(data_dir_);
+            kaorios::NativeStore::Changes changes;
+            for (const auto &name : engines) {
+                const auto filename = configName(name);
+                const auto generation = parseGeneration(store.read(name + ".stored_gen", true));
+                auto content = store.read(filename, true);
+                if (content.empty() && name == "copg") content = store.read("COPG.json", true);
+                if (content.empty()) continue;
+                if (!validConfig(name, content)) throw std::runtime_error("Legacy configuration validation failed");
+                if (generation == 0) stageConfig(store, changes, name, content);
+            }
+            store.transaction(changes);
+            std::cout << "Migration recorded; existing schemas and payload fields preserved\n";
+            return 0;
+        } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
     int cmdConfigGet(const std::string &engine) {
@@ -930,6 +776,7 @@ int main(int argc, char **argv) {
 
     HelperCtl ctl;
 
+    try {
     if (action == "status") {
         return ctl.cmdStatus(json_mode);
     } else if (action == "version") {
@@ -946,6 +793,8 @@ int main(int argc, char **argv) {
             return 1;
         }
         return ctl.cmdDisable(args[0]);
+    } else if (action == "prepare-boot" && args.empty()) {
+        return ctl.cmdPrepareBoot();
     } else if (action == "reload") {
         std::string eng = args.empty() ? "all" : args[0];
         return ctl.cmdReload(eng);
@@ -958,8 +807,10 @@ int main(int argc, char **argv) {
         }
         return ctl.cmdVerify(eng, clear_mode);
     } else if (action == "config") {
-        if (args.size() >= 2 && args[0] == "sync") {
+        if (args.size() == 2 && args[0] == "sync") {
             return ctl.cmdConfigSync(args[1]);
+        } else if (args.size() == 2 && args[0] == "migrate") {
+            return ctl.cmdConfigMigrate(args[1]);
         } else if (args.size() >= 2 && args[0] == "validate") {
             return ctl.cmdConfigValidate(args[1], args.size() > 2 ? args[2] : "");
         } else if (args.size() >= 2 && args[0] == "status") {
@@ -971,13 +822,17 @@ int main(int argc, char **argv) {
         } else if (args.size() >= 2 && args[0] == "get") {
             return ctl.cmdConfigGet(args[1]);
         } else {
-            std::cerr << "Usage: helperctl config {set|get|rollback|validate|status|sync} <pif|hma|tee|copg|kaorios|all> [file]\n";
+            std::cerr << "Usage: helperctl config {set|get|rollback|validate|status|sync|migrate} <pif|hma|tee|copg|kaorios|all> [file]\n";
             return 1;
         }
     } else if (action == "diagnostics") {
         return ctl.cmdDiagnostics();
     } else {
-        std::cerr << "Usage: helperctl {status|version|enable|disable|reload|verify|config|diagnostics} [--json]\n";
+        std::cerr << "Usage: helperctl {status|version|enable|disable|reload|prepare-boot|verify|config|diagnostics} [--json]\n";
+        return 1;
+    }
+    } catch (const std::exception &) {
+        std::cerr << "Control operation failed; inspect configuration integrity and retry explicitly\n";
         return 1;
     }
 }
