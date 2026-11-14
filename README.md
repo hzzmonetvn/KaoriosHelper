@@ -40,11 +40,13 @@ KaoriosHelper is a modern, unified Zygisk module engineered to eliminate conflic
 
 ---
 
-## Current verification checkpoint — 2026-11-12
+## Current verification checkpoint — 2026-11-14
 
-The 2.0 working branch is an incremental hardening release, not a completed architecture refactor. Current evidence and blockers are maintained in [SOURCE_AUDIT_2.md](docs/SOURCE_AUDIT_2.md), [FEATURE_PARITY.md](docs/FEATURE_PARITY.md), and [RELEASE_READINESS.md](docs/RELEASE_READINESS.md). Native configuration validation and persistence, failure containment, upstream update proposals, and release packaging have been improved. Settings.Global synchronization, complete snapshot migration, runtime generation linkage, and the Kaorios framework/Zygisk backend remain incomplete. No physical-device validation has been performed.
+The 2.0 working branch is incremental hardening, not a completed architecture refactor. Commit `bef592c` implements on-demand, allowlisted Settings.Global-to-module adapters, recoverable native transactions, explicit legacy migration/validated rollback and snapshot-bound ACK v2 identity. These are implemented control/evidence paths, not full framework schema parity or an atomic multi-file view for arbitrary readers. See the [app–module contract](docs/APP_MODULE_CONTRACT.md) for commands, supported mappings and limitations.
 
-The older architectural descriptions below are historical context, not proof of current runtime functionality. Boot-wide property mutations have been removed; KOW Inject is pinned separately from PlayIntegrityFork and its `pif.prop` format is not implemented as a compatible adapter.
+[CI run 43583721973](https://github.com/hzzmonetvn/KaoriosHelper/actions/runs/43583721973) passed host and Android build/integration jobs at `bef592c`; only a diagnostic module artifact was uploaded. Dependency/license acceptance remains open and the release-accepted upload was skipped. No physical-device validation has been performed. Kaorios/TEE backends, full HMA/COPG runtime coverage, app caller integration and ScreenCapture remain incomplete or unsupported. Current gates are in [FEATURE_PARITY.md](docs/FEATURE_PARITY.md) and [RELEASE_READINESS.md](docs/RELEASE_READINESS.md).
+
+The subsystem diagram and maturity labels are historical design context, not proof of runtime functionality. Boot-wide property mutations remain removed; synchronization reads Global settings and does not write them back. KOW Inject is pinned separately from PlayIntegrityFork and its `pif.prop` format is not implemented as a compatible adapter.
 
 ## 2. Subsystems & Maturity Matrix
 
@@ -53,7 +55,7 @@ Under strict engineering truthfulness protocols, KaoriosHelper is classified as 
 | Subsystem | Upstream Ancestor | Maturity | Hook & Runtime Mechanism | Device Status |
 |---|---|---|---|---|
 | **Zygisk Core** | `topjohnwu/zygisk-module-sample` | **PARTIAL** | Official Zygisk ABI v4, `dlclose` unmanaged, `SO_PEERCRED` namespace isolation | `DEVICE_NOT_TESTED` |
-| **Control Plane** | Native C++ Rewrite | **PARTIAL** | Pure C++20 CLI (`helperctl`), multi-ABI, atomic file staging, `flock(LOCK_EX)` | `DEVICE_NOT_TESTED` |
+| **Control Plane** | Native C++ Rewrite | **PARTIAL** | C++20 `helperctl`, on-demand Global adapters, redo-journal recovery, explicit migration and ACK-v2 status; app/device integration pending | `DEVICE_NOT_TESTED` |
 | **PIF Engine** | `osm0sis/PlayIntegrityFork` | **DEVICE_UNVERIFIED** | ShadowHook inline hook on Bionic libc `__system_property_read_callback` | `DEVICE_NOT_TESTED` |
 | **COPG Engine** | `07c6482e` (COPG) | **PARTIAL** | Peer `setns` mount (`MS_SLAVE`), client-side `ANDROID_ID` cache poisoning | `DEVICE_NOT_TESTED` |
 | **TEE Engine** | `TrickyStore` / `AlwaysStrong` | **BLOCKED** | Keybox XML parser active; Keystore2 ptrace daemon external; disabled by default | `DEVICE_NOT_TESTED` |

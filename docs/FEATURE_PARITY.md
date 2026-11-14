@@ -1,6 +1,6 @@
 # Feature Parity
 
-Evidence checkpoint: 2026-11-12, committed baseline `ca95c37` plus in-progress native configuration/upstream changes. This is source capability classification, not an end-to-end or hardware acceptance report.
+Evidence checkpoint: 2026-11-14, implementation `bef592c`. This is source capability classification, not an end-to-end or hardware acceptance report. See [APP_MODULE_CONTRACT.md](APP_MODULE_CONTRACT.md) for the supported control/adapter subset.
 
 ## Classification
 
@@ -24,16 +24,16 @@ Evidence checkpoint: 2026-11-12, committed baseline `ca95c37` plus in-progress n
 | TEE attestation runtime | BLOCKED | Runtime activity remains false; supervisor/interceptor/certgen dependency chain absent |
 | COPG profile selection, JNI and mapped-library PLT paths | PARTIAL | `engines/copg/copg_engine.cpp`; late-load coverage and measured application remain unverified |
 | COPG namespace CPU mount path | PARTIAL | Companion mutation path exists; lifecycle, confinement and rollback gaps remain |
-| Native config set/get/rollback/validate/status | PARTIAL | `helperctl.cpp`, `core/config/native_store.hpp`; descriptor-relative persistence and JSON parsing added in working tree |
-| Kaorios JSON storage | IMPLEMENTED | `kaorios.json` persistence only; not a Kaorios ROM runtime backend |
-| Settings.Global config synchronization | BLOCKED | Mapping absent; native sync explicitly reports unsupported and changes no settings |
-| Single-file replacement and locked rollback | IMPLEMENTED | NativeStore uses no-follow/exclusive staging, fsync and rename; multi-file crash atomicity is not established |
-| Versioned snapshots / complete schema migrations | MISSING | No recoverable multi-file manifest or complete migration pipeline |
-| Runtime generation/snapshot linkage | BLOCKED | PIF/COPG producers emit generation 0 and HMA emits 1; truthful CLI cannot converge to subsequent stored generations; no complete unified runtime |
-| Python and shell runtime parity | PARTIAL | Separate host models/fallback semantics; not equivalent to deployed native behavior |
+| Native config set/get/rollback/validate/status | IMPLEMENTED / DEVICE_UNVERIFIED | Native ingress, validated LKG and per-engine request generations; raw get and text mutation errors remain |
+| Kaorios JSON storage | IMPLEMENTED | Allowlisted scalar Global mapping under `settingsGlobal`; not a Kaorios ROM runtime backend |
+| Settings.Global config synchronization | IMPLEMENTED SUBSET / DEVICE_UNVERIFIED | On-demand fixed-argv reads and source-derived adapters; unsupported HMA/COPG semantics fail before publication; no write-back/watcher |
+| Recoverable native transaction and rollback | IMPLEMENTED | Descriptor-relative redo journal and cooperating reader lock; arbitrary-reader atomic multi-file snapshots remain unsupported |
+| Legacy migration / complete upstream schema migration | PARTIAL | Explicit exact-byte legacy migration/native metadata and COPG canonical copy implemented; not a general schema-version migration engine |
+| Runtime generation/snapshot linkage | IMPLEMENTED / DEVICE_UNVERIFIED | HMA/PIF/COPG bind ACK v2 to actual consumer snapshot, request, boot and live process; Android transport/lifecycle and full runtime remain PARTIAL |
+| Python and shell runtime parity | PARTIAL | Python status/runtime delegate to native; Action/boot scripts use native commands; legacy Python config persistence remains a separate domain |
 | Global boot mutations | IMPLEMENTED | Removal in `ca95c37` follows requirement 8; no compatibility exception permits global property/settings rewrites |
 | Android dual-ABI build/package definitions | IMPLEMENTED | Scripts and CI define ARM64/ARM32, API 31+ and DEX; artifact and loader success require separate evidence |
 | Upstream identity automation | PARTIAL | Git objects verified; source integration, transitive dependency/license closure remain separate |
 | Device acceptance | DEVICE_UNVERIFIED | No hardware results for Magisk, KernelSU or APatch |
 
-Host checkpoint reported by the coordinating run on 2026-11-12: 37 native cases and 59 Python tests, one Python skip. Earlier baseline was 36 native / 43 Python / one skip. These counts are run-specific, not coverage percentages. Coordinating session subsequently verified CI run `43219029337` for `ca95c37` succeeded, with Android ZIP artifact `13945066444`. Coordinating session then verified final CI `43219803240` at `3045411` succeeded for host and Android; hardware acceptance remains unverified. See `SOURCE_AUDIT_2.md` and `DEVICE_TEST_RESULTS.md`.
+At `bef592c`, local discovery passed 135 Python tests with one artifact-dependent skip; native build and CTest 1/1 passed. CI `43583721973` passed host and Android jobs, with all 135 artifact-integration tests running in the Android job. Only diagnostic artifact `14109666874` was uploaded; dependency/license acceptance and every hardware gate remain open. Counts are run-specific, not coverage percentages. See `DEVICE_TEST_RESULTS.md`.

@@ -1,6 +1,22 @@
 # Source Audit 2
 
-Date: 2026-11-12. Reference commit: `ca95c37`; native configuration/upstream working-tree changes are separately inspected, not attributed to that commit.
+Current checkpoint: 2026-11-14, implementation `bef592c`. The 2026-11-12 audit below is retained as a historical record; its unsupported-sync, per-file-only persistence and constant-generation findings are superseded by the following implementation checkpoint.
+
+## Current synchronization and evidence checkpoint
+
+- **Settings.Global — implemented subset:** source-derived allowlists, bounded fixed-argv two-pass reads, explicit adapters/merge and batch prevalidation. No watcher or Settings write-back. HMA rich/default policy, Secure-only and alternate keybox sources are not silently converted; unsupported members fail before publication.
+- **Persistence — implemented recoverability:** one locked, descriptor-pinned native store publishes a redo journal for config, validated LKG, generations and request identity. Cooperating readers recover first. Arbitrary unlocked readers still lack multi-file atomicity; trusted ancestors and complete semantic validation remain separate limitations.
+- **Migration/rollback — partial overall:** explicit exact-byte legacy migration initializes native metadata, including optional COPG canonical copy; validated LKG rollback advances native generation. This is not a complete upstream schema-version migration framework. Legacy Python persistence has its own non-interchangeable counter/journal.
+- **ACK v2 — implemented identity linkage:** HMA/PIF/COPG retain actual consumer bytes and bind their hash/generation to a fresh request, boot and live PID/EUID/start/argv0 identity. Strict parsing and serialized monotonic publication reject stale or regressive evidence. Same-generation reload renews request identity. Successful initialization is required before applied state; physical verification stays false.
+- **Compatibility — native authority:** Python runtime/status invoke native control with fixed arguments/capability checks; absent control yields unavailable/zero evidence instead of raw ACK or marker fallback. App caller integration and Android permissions/lifecycle remain unverified.
+
+At `bef592c`, local discovery passed 135 Python tests with one artifact-dependent skip, plus native build/CTest 1/1. CI `43583721973` passed host and Android jobs; Android artifact integration ran 135 tests without skips. Diagnostic artifact `14109666874` was uploaded; dependency/license acceptance remained nonzero and release-accepted upload was skipped. These are implementation/host/build results, not independent Android hook measurements or release/device acceptance.
+
+Kaorios/TEE runtime backends, complete HMA service interception, COPG lifecycle/confinement/late-load coverage, ACK transport lifecycle and ScreenCapture remain incomplete or unsupported. See [APP_MODULE_CONTRACT.md](APP_MODULE_CONTRACT.md), [RUNTIME_AUDIT.md](RUNTIME_AUDIT.md) and [RELEASE_READINESS.md](RELEASE_READINESS.md). No physical hardware result has been recorded.
+
+## Historical audit — 2026-11-12 (`ca95c37`)
+
+The remaining sections describe that earlier checkpoint, not the current implementation.
 
 ## Method and coverage
 

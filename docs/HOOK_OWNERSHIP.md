@@ -1,6 +1,6 @@
 # Hook Ownership
 
-Evidence checkpoint: 2026-11-12. Ownership is a design constraint, not proof a hook exists or works on a device. Android build floor is API 31; broader historical API ranges are not qualified support.
+Evidence checkpoint: 2026-11-14, implementation `bef592c`. Ownership is a design constraint, not proof a hook exists or works on a device. Android build floor is API 31; broader historical API ranges are not qualified support.
 
 | Boundary | Intended owner | Current status | Scope / limitation |
 |---|---|---|---|
@@ -11,7 +11,8 @@ Evidence checkpoint: 2026-11-12. Ownership is a design constraint, not proof a h
 | Configured app Build/property paths | COPG | PARTIAL / DEVICE_UNVERIFIED | Native exclusion of GMS/Play Store limits overlap; late libraries and subprocess profile matching need validation |
 | Configured app CPU mount | COPG | PARTIAL / DEVICE_UNVERIFIED | Companion lifecycle and confinement checks remain unresolved |
 | Global boot properties / Settings writes | None | MISSING by requirement | Requirement 8 removes global mutations; compatibility is not an exception |
-| Kaorios ROM Settings.Global bridge | None implemented | BLOCKED | Native-config mapping absent; sync reports unsupported |
+| Settings.Global-to-module synchronization | Native `helperctl` adapters | IMPLEMENTED SUBSET / DEVICE_UNVERIFIED | On-demand allowlisted reads and validated merges; no Settings write-back or watcher |
+| Kaorios ROM/Zygisk runtime backend | None implemented | BLOCKED | Mapped scalar storage is not a runtime consumer or ROM bridge |
 
 ## Enforcement that exists
 
