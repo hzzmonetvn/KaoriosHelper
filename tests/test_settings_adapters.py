@@ -62,7 +62,7 @@ int main() {
         for empty in ('', '   \n', 'null', '\nnull\n'):
             self.assertIsNone(self.adapt('pif', {'kaorios_pif_json': empty}, {'manual': 1}))
 
-    def test_semantically_unchanged_payload_is_noop(self):
+    def test_equal_adapted_json_is_noop(self):
         self.assertIsNone(self.adapt('pif', {'kaorios_pif_json': '{"MODEL":"fixture"}'}, {'MODEL': 'fixture'}))
 
     def test_pif_json_merges_present_fields_only(self):
@@ -87,6 +87,48 @@ int main() {
         self.assertEqual(output['profiles']['com.example.manual'], existing['profiles']['com.example.manual'])
         self.assertEqual(output['cpu_spoof'], existing['cpu_spoof'])
         self.assertTrue(output['enabled'])
+
+    def test_copg_omitted_enablement_preserves_manual_value(self):
+        for enabled in (False, True):
+            for games in ({}, {'com.example.new': {'MODEL': 'fixture'}}):
+                with self.subTest(enabled=enabled, games=games):
+                    existing = {'enabled': enabled, 'profiles': {'com.example.manual': {'model': 'manual'}}}
+                    result = self.adapt('copg', {'kaorios_gameprops_json': json.dumps({'games': games})}, existing)
+                    output = existing if result is None else result
+                    self.assertIs(output['enabled'], enabled)
+                    self.assertEqual(output['profiles']['com.example.manual'], existing['profiles']['com.example.manual'])
+
+    def test_copg_explicit_enablement_and_scalar_gate(self):
+        for stored in (False, True):
+            for enabled in (False, True):
+                for toggle in (None, 'false', 'true'):
+                    with self.subTest(stored=stored, enabled=enabled, toggle=toggle):
+                        existing = {'enabled': stored, 'profiles': {}}
+                        values = {'kaorios_gameprops_json': json.dumps({'games': {}, 'enabled': enabled})}
+                        if toggle is not None:
+                            values['kaorios_spoof_gameprops'] = toggle
+                        result = self.adapt('copg', values, existing)
+                        output = existing if result is None else result
+                        self.assertIs(output['enabled'], enabled and toggle != 'false')
+        for stored in (False, True):
+            for toggle in ('false', 'true'):
+                existing = {'enabled': stored, 'profiles': {}}
+                result = self.adapt('copg', {'kaorios_gameprops_json': '{"games":{}}',
+                                            'kaorios_spoof_gameprops': toggle}, existing)
+                self.assertIs((existing if result is None else result)['enabled'], toggle == 'true')
+
+    def test_copg_new_enablement_default_uses_games_map(self):
+        for games in ({}, {'com.example.new': {'MODEL': 'fixture'}}):
+            with self.subTest(games=games):
+                output = self.adapt('copg', {'kaorios_gameprops_json': json.dumps({'games': games})})
+                self.assertIs(output['enabled'], bool(games))
+
+    def test_hma_scope_normalization_is_a_single_representation_change(self):
+        raw = {'scope': {'com.example.caller': ['z.pkg', 'a.pkg', 'z.pkg']}}
+        values = {'kaorios_hma_config': json.dumps(raw)}
+        output = self.adapt('hma', values, raw)
+        self.assertEqual(output['scope']['com.example.caller'], ['a.pkg', 'z.pkg'])
+        self.assertIsNone(self.adapt('hma', values, output))
 
     def test_copg_preserves_packages_object_schema(self):
         existing = {'packages': {'com.example.manual': {'enabled': False}}}

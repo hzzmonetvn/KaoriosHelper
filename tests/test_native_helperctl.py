@@ -116,6 +116,158 @@ class NativeHelperCtlTest(unittest.TestCase):
         self.assertFalse((self.data/'hma.stored_gen').exists())
         self.assertFalse((self.data/'hma.request.json').exists())
 
+    def test_boot_preparation_repairs_corrupt_requested_generation(self):
+        for engine in ('hma', 'pif'):
+            self.assertEqual(self.setconfig('{}', engine).returncode, 0)
+        for corrupt in ('garbage', '-1', '+1', '1 extra', '18446744073709551616'):
+            with self.subTest(generation=corrupt):
+                old = {engine: json.loads((self.data/f'{engine}.request.json').read_text())
+                       for engine in ('hma', 'pif')}
+                (self.data/'hma.requested_gen').write_text(corrupt)
+                (self.data/'pif.request.json').write_text(json.dumps({**old['pif'], 'bootId': 'previous-boot'}))
+                result = self.runctl('prepare-boot')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                for engine in ('hma', 'pif'):
+                    request = json.loads((self.data/f'{engine}.request.json').read_text())
+                    self.assertNotEqual(request['requestId'], old[engine]['requestId'])
+                    self.assertEqual(request['bootId'], Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+                    self.assertEqual((self.data/f'{engine}.stored_gen').read_text(), '1\n')
+                    self.assertEqual((self.data/f'{engine}.requested_gen').read_text(), '1\n')
+
+    def test_boot_preparation_isolates_invalid_managed_engine(self):
+        for engine in ('hma', 'pif'):
+            self.assertEqual(self.setconfig('{}', engine).returncode, 0)
+        for corrupt_leaf, corrupt in (('hma.stored_gen', 'broken'), ('hma.json', '{broken')):
+            with self.subTest(leaf=corrupt_leaf):
+                (self.data/'hma.stored_gen').write_text('1\n')
+                (self.data/'hma.json').write_text('{}')
+                old = {engine: json.loads((self.data/f'{engine}.request.json').read_text())
+                       for engine in ('hma', 'pif')}
+                for engine in ('hma', 'pif'):
+                    (self.data/f'{engine}.request.json').write_text(json.dumps({**old[engine], 'bootId': 'previous-boot'}))
+                (self.data/corrupt_leaf).write_text(corrupt)
+                result = self.runctl('prepare-boot')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('hma', result.stderr)
+                self.assertNotEqual(json.loads((self.data/'pif.request.json').read_text())['requestId'], old['pif']['requestId'])
+                self.assertEqual(json.loads((self.data/'hma.request.json').read_text())['requestId'], old['hma']['requestId'])
+                self.assertEqual((self.data/'pif.stored_gen').read_text(), '1\n')
+                self.assertEqual((self.data/corrupt_leaf).read_text(), corrupt)
+
+    def test_corrupt_generation_status_is_engine_local(self):
+        self.assertEqual(self.setconfig('{}', 'copg').returncode, 0)
+        self.assertEqual(self.runctl('enable', 'copg').returncode, 0)
+        self.ack('HOOK_OBSERVED')
+        self.assertEqual(self.setconfig('{}', 'pif').returncode, 0)
+        for suffix in ('stored_gen', 'requested_gen'):
+            for corrupt in ('broken', '-1', '+1', '1 extra', '18446744073709551616'):
+                with self.subTest(leaf=suffix, generation=corrupt):
+                    leaf = self.data/f'copg.{suffix}'
+                    leaf.write_text(corrupt)
+                    result = self.runctl('status', '--json')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    states = json.loads(result.stdout)['engines']
+                    state = states['copg']
+                    self.assertEqual(state['status'], 'INVALID_CONFIG')
+                    self.assertTrue(state['configValid'])
+                    self.assertEqual(state['appliedGeneration'], 0)
+                    for flag in ('processLoaded', 'hookRegistered', 'runtimeObserved', 'deviceVerified'):
+                        self.assertFalse(state[flag])
+                    self.assertTrue(state['pendingReload'])
+                    self.assertIn('generation', state['lastError'])
+                    self.assertNotIn(corrupt, state['lastError'] + state['details'])
+                    self.assertEqual(states['pif']['storedGeneration'], 1)
+                    self.assertNotEqual(states['pif']['status'], 'INVALID_CONFIG')
+                    self.assertEqual(leaf.read_text(), corrupt)
+                    leaf.write_text('1\n')
+
+    def test_corrupt_stored_generation_requires_explicit_migration(self):
+        payload = '{"profiles":{},"manual":{"keep":true}}\n'
+        self.assertEqual(self.setconfig(payload, 'copg').returncode, 0)
+        self.assertEqual(self.runctl('enable', 'copg').returncode, 0)
+        self.settings_fixture({'kaorios_gameprops_json': '{"games":{"com.example.new":{"MODEL":"fixture"}}}'})
+        lkg = '{"profiles":{"com.example.old":{}}}\n'
+        (self.data/'spoof.json.lkg').write_text(lkg)
+        for corrupt in ('broken', '18446744073709551616'):
+            with self.subTest(generation=corrupt):
+                (self.data/'copg.stored_gen').write_text('1\n')
+                self.ack('HOOK_OBSERVED')
+                self.assertTrue(self.status()['runtimeObserved'])
+                old = (self.data/'copg.request.json').read_text()
+                (self.data/'copg.stored_gen').write_text(corrupt)
+                for args in (('config', 'set', 'copg', self.source('{}')),
+                             ('config', 'rollback', 'copg'), ('config', 'sync', 'copg'),
+                             ('reload', 'copg'), ('enable', 'copg'), ('disable', 'copg')):
+                    self.assertNotEqual(self.runctl(*args).returncode, 0, args)
+                    self.assertEqual((self.data/'copg.stored_gen').read_text(), corrupt)
+                    self.assertEqual((self.data/'copg.request.json').read_text(), old)
+                    self.assertEqual((self.data/'spoof.json').read_text(), payload)
+                result = self.runctl('config', 'migrate', 'copg')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual((self.data/'spoof.json').read_text(), payload)
+                self.assertEqual((self.data/'copg.stored_gen').read_text(), '1\n')
+                self.assertEqual((self.data/'copg.requested_gen').read_text(), '1\n')
+                self.assertNotEqual((self.data/'copg.request.json').read_text(), old)
+                self.assertFalse(self.status()['runtimeObserved'])
+                self.assertEqual(self.status()['appliedGeneration'], 0)
+                request = (self.data/'copg.request.json').read_text()
+                self.assertEqual(self.runctl('config', 'migrate', 'copg').returncode, 0)
+                self.assertEqual((self.data/'copg.request.json').read_text(), request)
+
+    def test_migration_rejects_missing_payload_with_corrupt_metadata(self):
+        for content in (None, ''):
+            with self.subTest(payload=content):
+                if content is not None:
+                    (self.data/'pif.json').write_text(content)
+                (self.data/'pif.stored_gen').write_text('broken')
+                (self.data/'pif.requested_gen').write_text('1\n')
+                state = self.status('pif')
+                self.assertEqual(state['status'], 'INVALID_CONFIG')
+                self.assertIn('Restore valid pif.json', state['details'])
+                for engine in ('pif', 'all'):
+                    result = self.runctl('config', 'migrate', engine)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('pif', result.stderr)
+                    self.assertEqual((self.data/'pif.stored_gen').read_text(), 'broken')
+                    self.assertEqual((self.data/'pif.requested_gen').read_text(), '1\n')
+                    self.assertFalse((self.data/'pif.request.json').exists())
+                    self.assertFalse((self.data/'.native-transaction.json').exists())
+
+    def test_storage_only_request_repair_guidance_uses_supported_command(self):
+        payload = '{"schemaVersion":1,"manual":{"keep":true}}'
+        self.assertEqual(self.setconfig(payload, 'kaorios').returncode, 0)
+        (self.data/'kaorios.requested_gen').write_text('bad')
+        state = self.status('kaorios')
+        self.assertEqual(state['status'], 'INVALID_CONFIG')
+        self.assertIn('config set kaorios FILE', state['details'])
+        self.assertNotIn('prepare-boot', state['details'])
+        self.assertNotIn('reload kaorios', state['details'])
+        self.assertEqual(self.setconfig(payload, 'kaorios').returncode, 0)
+        self.assertEqual(self.status('kaorios')['status'], 'INCOMPLETE_RUNTIME')
+        self.assertEqual((self.data/'kaorios.requested_gen').read_text(), '2\n')
+
+    def test_unmanaged_request_repair_guidance_requires_migration(self):
+        (self.data/'pif.json').write_text('{}')
+        (self.data/'pif.stored_gen').write_text('0\n')
+        (self.data/'pif.requested_gen').write_text('junk')
+        state = self.status('pif')
+        self.assertEqual(state['status'], 'INVALID_CONFIG')
+        self.assertIn('config migrate pif', state['details'])
+        self.assertNotIn('prepare-boot', state['details'])
+        self.assertEqual(self.runctl('config', 'migrate', 'pif').returncode, 0)
+        self.assertEqual((self.data/'pif.stored_gen').read_text(), '1\n')
+        self.assertEqual((self.data/'pif.requested_gen').read_text(), '1\n')
+        self.assertEqual(self.status('pif')['status'], 'PENDING_RELOAD')
+
+    def test_migration_rejects_invalid_payload_before_metadata_repair(self):
+        (self.data/'hma.json').write_text('{broken')
+        (self.data/'hma.stored_gen').write_text('broken')
+        result = self.runctl('config', 'migrate', 'hma')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual((self.data/'hma.stored_gen').read_text(), 'broken')
+        self.assertFalse((self.data/'hma.request.json').exists())
+        self.assertFalse((self.data/'.native-transaction.json').exists())
+
     def test_malformed_request_remains_pending(self):
         self.assertEqual(self.setconfig('{}', 'copg').returncode, 0)
         self.assertEqual(self.runctl('enable', 'copg').returncode, 0)
@@ -304,6 +456,56 @@ class NativeHelperCtlTest(unittest.TestCase):
         self.assertEqual((self.data/'pif.stored_gen').read_text(), '2\n')
         self.assertEqual(self.runctl('config', 'sync', 'pif').returncode, 0)
         self.assertEqual((self.data/'pif.stored_gen').read_text(), '2\n')
+
+    def test_copg_sync_requires_legacy_migration_before_publication(self):
+        legacy = '{"enabled":false,"profiles":{"com.example.manual":{"model":"manual","cpu_spoof":false}},"extension":{"keep":true}}\n'
+        (self.data/'COPG.json').write_text(legacy)
+        self.settings_fixture()
+        self.assertEqual(self.runctl('config', 'sync', 'copg').returncode, 0)
+        self.assertFalse((self.data/'spoof.json').exists())
+        self.settings_fixture({'kaorios_gameprops_json': '{"games":{"com.example.new":{"MODEL":"fixture"}}}'})
+        result = self.runctl('config', 'sync', 'copg')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('migration', result.stderr)
+        self.assertEqual((self.data/'COPG.json').read_text(), legacy)
+        for leaf in ('spoof.json', 'copg.stored_gen', 'copg.request.json', '.native-transaction.json'):
+            self.assertFalse((self.data/leaf).exists(), leaf)
+        self.assertEqual(self.runctl('config', 'migrate', 'copg').returncode, 0)
+        result = self.runctl('config', 'sync', 'copg')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads((self.data/'spoof.json').read_text())
+        self.assertEqual(config['profiles']['com.example.manual'], json.loads(legacy)['profiles']['com.example.manual'])
+        self.assertEqual(config['profiles']['com.example.new'], {'model': 'fixture'})
+        self.assertFalse(config['enabled'])
+        self.assertEqual(config['extension'], {'keep': True})
+        self.assertEqual((self.data/'COPG.json').read_text(), legacy)
+        self.assertEqual((self.data/'copg.stored_gen').read_text(), '2\n')
+
+    def test_sync_all_legacy_copg_rejection_preserves_other_engines(self):
+        self.assertEqual(self.setconfig('{"MODEL":"old"}', 'pif').returncode, 0)
+        (self.data/'COPG.json').write_text('{"profiles":{"com.example.manual":{"model":"manual"}}}')
+        self.settings_fixture({'kaorios_pif_json': '{"MODEL":"updated"}',
+                               'kaorios_gameprops_json': '{"games":{"com.example.new":{"MODEL":"fixture"}}}'})
+        request = (self.data/'pif.request.json').read_text()
+        result = self.runctl('config', 'sync', 'all')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads((self.data/'pif.json').read_text()), {'MODEL': 'old'})
+        self.assertEqual((self.data/'pif.stored_gen').read_text(), '1\n')
+        self.assertEqual((self.data/'pif.request.json').read_text(), request)
+        self.assertFalse((self.data/'spoof.json').exists())
+        self.assertFalse((self.data/'.native-transaction.json').exists())
+
+    def test_sync_normalization_advances_generation_only_once(self):
+        self.assertEqual(self.setconfig('{"spoofBuild":true}', 'pif').returncode, 0)
+        self.settings_fixture({'kaorios_pif_json': '{"spoofBuild":"1"}'})
+        result = self.runctl('config', 'sync', 'pif')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.data/'pif.stored_gen').read_text(), '2\n')
+        self.assertIs(type(json.loads((self.data/'pif.json').read_text())['spoofBuild']), int)
+        request = (self.data/'pif.request.json').read_text()
+        self.assertEqual(self.runctl('config', 'sync', 'pif').returncode, 0)
+        self.assertEqual((self.data/'pif.stored_gen').read_text(), '2\n')
+        self.assertEqual((self.data/'pif.request.json').read_text(), request)
 
     def test_sync_all_prevalidates_and_preserves_on_error(self):
         self.assertEqual(self.setconfig('{"MODEL":"old"}', 'pif').returncode, 0)

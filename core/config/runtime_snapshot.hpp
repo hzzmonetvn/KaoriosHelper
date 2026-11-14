@@ -77,4 +77,32 @@ inline bool bindRuntimeAckToSnapshot(RuntimeAck &ack, const RuntimeConfigSnapsho
     if (!bindRuntimeAckToCurrentProcess(ack, snapshot.generation, snapshot.bytes, snapshot.requestId)) return false;
     return ack.timestamp >= snapshot.notBeforeMillis;
 }
+
+inline bool writeRuntimeAckForCurrentConfig(const std::string &dataDir, const RuntimeAck &ack) {
+    std::string reason;
+    if (!validateRuntimeAck(ack, reason) || !runtimeAckHasLiveIdentity(ack)) return false;
+    try {
+        // Keep config -> runtime lock order through publication and journal recovery.
+        NativeStore store(dataDir);
+        const auto filename = ack.engine == "copg" ? "spoof.json" :
+            (ack.engine == "tee" ? "keybox.xml" : ack.engine + ".json");
+        const bool enabled = (ack.engine == "hma" || ack.engine == "pif")
+            ? !store.exists(ack.engine + ".disabled") : store.exists(ack.engine + ".enabled");
+        const auto request = nlohmann::json::parse(store.read(ack.engine + ".request.json"), nullptr, false);
+        const auto generation = std::to_string(ack.configGeneration) + "\n";
+        if (!enabled || store.read(ack.engine + ".stored_gen") != generation ||
+            store.read(ack.engine + ".requested_gen") != generation || !request.is_object() ||
+            !request.contains("requestId") || !request["requestId"].is_string() ||
+            !request.contains("bootId") || !request["bootId"].is_string() ||
+            request["bootId"].get<std::string>() != runtimeAckBootId() ||
+            !request.contains("notBeforeMillis") || !request["notBeforeMillis"].is_number_unsigned()) return false;
+        const auto notBefore = request["notBeforeMillis"].get<uint64_t>();
+        const auto token = request["requestId"].get<std::string>();
+        if (notBefore == 0 || ack.timestamp < notBefore ||
+            !runtimeAckMatchesCurrent(ack, ack.engine, ack.configGeneration, store.read(filename), token)) return false;
+        return detail::publishRuntimeAck(dataDir + "/runtime", ack, token);
+    } catch (...) {
+        return false;
+    }
+}
 }

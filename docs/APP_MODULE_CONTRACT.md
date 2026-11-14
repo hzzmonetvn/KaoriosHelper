@@ -20,12 +20,12 @@ For `config set`/explicit-source validation, stage a regular file owned by the e
 | `config set ENGINE FILE` | Full validated replacement; preserve valid previous payload as LKG, advance stored/requested generation, create fresh request, pending runtime acknowledgement |
 | `config rollback ENGINE` | Restore validated native LKG, advance generation and renew request; not runtime completion |
 | `config sync ENGINE` / `config sync all` | Read selected Global keys, adapt/merge supplied fields, prevalidate every changed engine, then publish one recoverable transaction |
-| `config migrate ENGINE` / `config migrate all` | Validate legacy payloads and preserve exact bytes while assigning missing native generation/request metadata; COPG may copy `COPG.json` into `spoof.json` |
+| `config migrate ENGINE` / `config migrate all` | Validate payloads and preserve exact bytes while initializing legacy metadata or explicitly repairing malformed stored counters; COPG may copy `COPG.json` into `spoof.json` |
 | `config status ENGINE` | Configuration validation-only text, not synchronization/application state |
 | `config get ENGINE` | Raw configuration payload; not a redacted metadata API |
 | `enable ENGINE` / `disable ENGINE` | Record desired enablement and a fresh request in one transaction; restart may still be required |
 | `reload ENGINE` / `reload all` | Fresh request token at the same stored generation; exit 0 means recorded, not applied |
-| `prepare-boot` | Lifecycle entrypoint: renew stale boot requests for managed configurations; leave valid current-boot requests unchanged; do not migrate legacy payloads implicitly |
+| `prepare-boot` | Renew stale/malformed requested metadata for valid managed configurations; leave valid current-boot requests unchanged. Invalid stored counters/payloads return nonzero after other valid engines are prepared; no implicit legacy migration |
 
 Configuration engines are `hma`, `pif`, `tee`, `copg`, `kaorios`. Runtime toggle/reload engines are `hma`, `pif`, `tee`, `copg`; `all` is supported for reload, sync and migration. HMA/PIF desired enablement defaults on unless disabled; TEE/COPG require opt-in. Kaorios configuration storage is not a functioning runtime backend. ScreenCapture is unsupported and not a registered operational engine.
 
@@ -66,8 +66,9 @@ These stored names do not imply implemented native behavior for each preference.
 ### Preservation and rejection rules
 
 - `config set` replaces; `config sync` merges only fields supplied by its adapter. Unknown/manual existing fields and unrelated profiles remain. Touched HMA caller scope arrays are replaced by their converted list.
-- Missing, whitespace, empty or literal `null` values mean no supplied preference, not deletion. JSON-semantic equality is a no-op; it does not renew a request or migrate generation-zero metadata. Use explicit migration/reload when needed.
-- COPG retains manual CPU/PLT/Android-ID options and unrelated profiles. Unsupported incoming fields or `debug: true` fail rather than being silently dropped.
+- Missing, whitespace, empty or literal `null` values mean no supplied preference, not deletion. Equality of the adapted result with parsed stored JSON is a no-op (ignoring object-key order/formatting); it does not renew a request or repair/migrate metadata. Flag-type conversion or HMA scope sorting/deduplication can change representation and advance generation once; repeating the same normalized input is a no-op. TEE compares exact bytes. Use explicit migration/reload when needed.
+- COPG retains manual CPU/PLT/Android-ID options and unrelated profiles. Without incoming `enabled` or a scalar toggle, existing `enabled` is preserved; only a config without that field infers a default from the incoming games map. Explicit JSON false remains false; the scalar toggle gates an explicit/inferred JSON value, or sets enablement when neither was supplied. Unsupported incoming fields or `debug: true` fail rather than being silently dropped.
+- When COPG has only legacy `COPG.json`, sync with a changed result fails before publishing canonical output: run `config migrate copg` first. No-op/missing Settings values leave the legacy config untouched. A rejected COPG member also prevents all publication in `sync all`.
 - HMA is not complete framework policy parity. Whitelist/opposite/preset/settings/installer semantics and enabled WebView protection are not converted. Ordinary app defaults may therefore fail validation; `sync all` publishes none if any member is invalid. A caller can select a supported engine without claiming that all preferences synchronized.
 - Synchronization does not automatically change module runtime enablement. Stored COPG `enabled` and desired engine enablement are separate.
 - TEE checks structure only, not complete XML validity or cryptographic validity, and has no complete runtime backend.
@@ -76,15 +77,15 @@ The fixed `/system/bin/settings` subprocess uses direct argv, redacted stderr, b
 
 ## Persistence, migration and request identity
 
-The shared `.config.lock` serializes native mutations, management readers, snapshot readers and companion identity checks. NativeStore pins the final directory, checks internal leaf ownership/mode/type/link count and uses private no-follow descriptor-relative staging. Trusted ancestor paths remain required.
+The shared `.config.lock` serializes native mutations, management readers, snapshot readers and current-config ACK publication through both the companion and engine direct fallbacks. NativeStore pins the final directory, checks internal leaf ownership/mode/type/link count and uses private no-follow descriptor-relative staging. Trusted ancestor paths remain required.
 
 A native `.native-transaction.json` redo journal groups configuration, validated native `.lkg`, stored/requested generations, request metadata and relevant markers. Durable journal publication commits the recovery decision; cooperating readers replay under lock before reading. Recovery is idempotent, but arbitrary raw/unlocked readers can see intermediate multi-file publication. This is recoverable persistence, not an atomic multi-file snapshot for every reader. Native journal values are bounded to 16 MiB each, 32 MiB in aggregate, at most 64 targets, and a 128 MiB serialized journal.
 
 `ENGINE.stored_gen` and `ENGINE.requested_gen` are native per-engine counters. Legacy Python `generation.txt` and its `.config.transaction` journal are separate and not interchangeable or jointly recovered. Production clients must use native control rather than mix those writers.
 
-Configuration presence does not invent generation 1. Explicit migration validates and preserves the old payload/schema, initializes missing native metadata and leaves the original `COPG.json` intact after a canonical copy. Already-managed payloads do not advance generation merely from migration. Rollback revalidates native LKG and creates a new generation.
+Configuration presence does not invent generation 1. Explicit migration validates and preserves the old payload/schema, initializes missing native metadata and leaves the original `COPG.json` intact after a canonical copy. A malformed/overflowing stored counter requires explicit migration: after payload validation, it starts a new generation-1 identity with a fresh token instead of guessing lost counter history. Existing valid positive counters are not reset, and repeating migration leaves the request unchanged. If the stored counter is corrupt and no valid payload exists, migration fails without publishing: restore the valid canonical payload from backup before migrating; COPG can use its valid legacy source. Ordinary mutations retain strict stored-counter validation; status does not repair metadata. For corrupt requested metadata, managed runtime engines use reload/boot renewal, unmanaged generation-zero payloads use migration, and storage-only Kaorios uses `config set kaorios FILE` with the validated stored payload. Rollback revalidates native LKG and creates a new generation.
 
-Each request has a random 32-character lowercase hexadecimal token, current boot UUID and positive `CLOCK_BOOTTIME` lower-bound timestamp. Reload/toggle renew this identity even at the same stored generation; stale ACKs remain pending. Boot preparation renews prior-boot identity without increasing stored generation and does not silently migrate unmanaged payloads.
+Each request has a random 32-character lowercase hexadecimal token, current boot UUID and positive `CLOCK_BOOTTIME` lower-bound timestamp. Reload/toggle renew this identity even at the same stored generation; stale ACKs remain pending. Boot preparation renews prior-boot identity or malformed requested-generation metadata without increasing a valid stored generation. Invalid managed payloads/stored counters receive no new request and cause exit 1, but other valid engines are still prepared. Directory/leaf trust, read and transaction failures remain fatal. Unmanaged payloads still require explicit migration.
 
 ## Runtime evidence and status schema 1
 
@@ -102,12 +103,13 @@ Current ACK v2 evidence requires:
 4. A bounded boot-time ACK timestamp no earlier than process start or request creation.
 5. Successful initialization/observation: both `initResult == 0` and `errorCode == 0`, with `HOOK_INITIALIZED` or `HOOK_OBSERVED`.
 
-Strict parsing rejects malformed/missing fields, duplicate keys, excessive nesting, invalid ranges/events and legacy v1 evidence as current application. Publication rejects duplicate/regressive stages; failure is terminal within one process/request/snapshot. A different current request/process/snapshot can begin again. The companion verifies peer credentials and locked current state without restamping old producer evidence. Local evidence is not authentication against root or a compromised engine.
+Strict parsing rejects malformed/missing fields, duplicate keys, excessive nesting, invalid ranges/events and legacy v1 evidence as current application. Publication rejects duplicate/regressive stages; failure is terminal within one process/request/snapshot. Both companion and direct engine fallbacks validate enabled state, generation, exact payload hash, request token/boot/time and live identity while holding `.config.lock` through runtime-directory locking and publication. A validated current request can replace evidence from a different token even when explicit counter repair starts again at generation 1; stale producers cannot republish their old request through these paths. Within the current request, monotonic stage/process checks remain. The companion additionally checks peer credentials; neither path restamps old producer evidence. ACK canonical/compatibility aliases retain their existing two-rename, non-crash-atomic limitation. Local evidence is not authentication against root or a compromised engine.
 
 HMA/PIF/COPG ACK metadata describes the snapshot supplied to initialization/profile selection, not whichever file happens to be latest when the ACK is sent. An unbound legacy snapshot emits no current config-bound evidence. HMA no-argument initialization is not bound proof. Physical-device behavior remains unverified.
 
 | State | Meaning |
 |---|---|
+| `INVALID_CONFIG` | Stored/requested generation metadata is malformed; engine-local error, pending reload and zero applied/process/hook evidence; other engines remain reportable |
 | `DISABLED` | Desired enablement off; an already-running process may still need restart |
 | `NOT_CONFIGURED` | Canonical config missing/invalid; legacy payload may require migration |
 | `INCOMPLETE_RUNTIME` | Configuration/storage may exist, but the required backend/payload is incomplete |
@@ -116,7 +118,7 @@ HMA/PIF/COPG ACK metadata describes the snapshot supplied to initialization/prof
 | `READY` | Current matching initialization; observation still pending |
 | `DEVICE_UNVERIFIED` | Current matching runtime observation; no external physical-device verification |
 
-Old event/time fields may remain diagnostic after identity invalidation; they do not keep process/hook/applied evidence current. `deviceVerified` stays false and `lastVerifiedTimestamp` stays 0. Preserve unknown states conservatively in the app. `runtimeAvailable` is backend availability, not proof of device operation.
+Old event/time fields may remain diagnostic after identity invalidation; they do not keep process/hook/applied evidence current. Malformed generation metadata is reported as zero for the affected numeric field; `configValid` still describes payload validation, so inspect `status` and `lastError` as well. Absent/empty generation metadata retains the legacy zero/unmanaged meaning. `deviceVerified` stays false and `lastVerifiedTimestamp` stays 0. Preserve unknown states conservatively in the app. `runtimeAvailable` is backend availability, not proof of device operation.
 
 ## Python compatibility
 

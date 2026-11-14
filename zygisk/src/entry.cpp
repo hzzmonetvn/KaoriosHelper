@@ -230,28 +230,7 @@ static void companion_handler(int client_socket) {
                          target_pid, cr.uid, ack.processName.c_str(), reason.c_str());
                     result = -1;
                 } else {
-                    try {
-                        const std::string data = "/data/adb/modules/kaorioshelper/data";
-                        NativeStore store(data);
-                        const auto filename = ack.engine == "copg" ? "spoof.json" :
-                            (ack.engine == "tee" ? "keybox.xml" : ack.engine + ".json");
-                        const auto content = store.read(filename);
-                        const auto request = nlohmann::json::parse(store.read(ack.engine + ".request.json"), nullptr, false);
-                        const auto stored = store.read(ack.engine + ".stored_gen");
-                        const auto requested = store.read(ack.engine + ".requested_gen");
-                        const auto expected = std::to_string(ack.configGeneration) + "\n";
-                        const bool enabled = (ack.engine == "hma" || ack.engine == "pif")
-                            ? !store.exists(ack.engine + ".disabled") : store.exists(ack.engine + ".enabled");
-                        const bool valid = enabled && stored == expected && requested == expected &&
-                            request.is_object() && request.value("bootId", "") == runtimeAckBootId() &&
-                            request.contains("notBeforeMillis") && request["notBeforeMillis"].is_number_unsigned() &&
-                            ack.timestamp >= request["notBeforeMillis"].get<uint64_t>() &&
-                            runtimeAckMatchesCurrent(ack, ack.engine, ack.configGeneration, content, request.value("requestId", ""));
-                        if (valid && writeRuntimeAckDirect(data + "/runtime", ack)) result = 0;
-                        else result = -2;
-                    } catch (...) {
-                        result = -2;
-                    }
+                    result = writeRuntimeAckForCurrentConfig("/data/adb/modules/kaorioshelper/data", ack) ? 0 : -2;
                 }
         }
     } else {

@@ -13,6 +13,8 @@
 | CI `43583721973`, exact `bef592c` | Host and Android jobs SUCCESS | Android artifact integration: 135 tests without skips; DEX, ARM64/ARM32 builds and packaging checks passed |
 | Diagnostic artifact `14109666874` | `kaorioshelper-diagnostic-module` | Release-accepted upload skipped; dependency/license acceptance remains nonzero |
 | Packaged diagnostic module | `kaorioshelper-v1.0.0.zip`, SHA-256 `d198151809e1142338b19b4c7976b94dce0610771f11b087551dab0de6bab782` | Archive/required paths checked; no release promotion or hardware acceptance |
+| Generation/COPG regression pass, uncommitted tree on `f4d1143` | 147 Python tests in 60.508s, one Android-artifact skip; native build, CTest 1/1 and 38 native cases passed | `PYTHONPATH="$PWD" python3 -m unittest discover -s tests -p 'test_*.py' -v`; focused real CLI 27/27 and adapter 17/17 passed; host evidence only, not the earlier 135-test CI |
+| Review follow-up F1/R2/R3/N1, uncommitted tree on `f4d1143` | Final run: 153 Python tests in 66.561s, one Android-artifact skip; native build, CTest 1/1 and 38 native cases passed | CLI 30 tests in 17.224s; three real native ACK repair tests reproduced failure before the writer fix and passed in 13.297s afterward; journal recovery strengthened and rerun before final discovery; canonical/compat alias and stale producer cases, not Android device execution |
 | Android physical hardware | DEVICE_UNVERIFIED | No physical-device run or result recorded |
 
 Historical 27-native/29-Python transcript excerpts are superseded as current counts. No all-tests transcript is invented here. Exact invocation, revision and output should accompany subsequent results; additional tests may change these numbers.

@@ -4,6 +4,8 @@
 
 import concurrent.futures
 import json
+import select
+import subprocess
 import unittest
 
 from core.runtime.runtime_manager import RuntimeManager
@@ -69,6 +71,65 @@ class TestRuntimeManager(NativeControlCase):
         self.produce_ack()
         self.assertEqual(self.mgr.status_mgr.get_runtime_ack_status("copg"), UnifiedStatus.APPLIED)
         self.assertFalse(self.mgr.status_mgr.generate_report()["engines"]["copg"]["deviceVerified"])
+
+    def assert_counter_repair_ack(self, compat_only=False, stop_after=None):
+        for _ in range(4):
+            self.configure()
+        old_process, old_ack = self.produce_ack()
+        self.assertEqual(old_ack['configGeneration'], 4)
+        runtime = self.data_dir / 'runtime'
+        if compat_only:
+            (runtime / 'copg.ack.json').unlink()
+        self.configure('pif', '{"MODEL":"preserved"}')
+        pif_before = {p.name: p.read_bytes() for p in self.data_dir.glob('pif.*')}
+        (self.data_dir / 'copg.stored_gen').write_text('broken')
+        env = dict(self.env)
+        if stop_after is not None:
+            env['KAORIOS_TEST_TX_STOP_AFTER'] = str(stop_after)
+        result = subprocess.run([str(self.control), 'config', 'migrate', 'copg'],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0 if stop_after is None else 86, result.stderr)
+        if stop_after is not None:
+            self.assertTrue((self.data_dir / '.native-transaction.json').exists())
+            old_process.stdin.write('repeat\n')
+            old_process.stdin.flush()
+            self.assertTrue(select.select([old_process.stdout], [], [], 10)[0])
+            self.assertEqual(old_process.stdout.readline(), 'rejected\n')
+            self.assertFalse((self.data_dir / '.native-transaction.json').exists())
+        state = self.mgr.status_mgr.generate_report()['engines']['copg']
+        self.assertEqual(state['storedGeneration'], 1)
+        self.assertEqual(state['requestedGeneration'], 1)
+        self.assertEqual(state['appliedGeneration'], 0)
+        self.assertTrue(state['pendingReload'])
+        self.assertFalse((self.data_dir / '.native-transaction.json').exists())
+        self.assertNotEqual(json.loads((self.data_dir / 'copg.request.json').read_text())['requestId'],
+                            old_ack['requestId'])
+        current_process, ack = self.produce_ack()
+        self.assertEqual(ack['configGeneration'], 1)
+        self.assertEqual(self.mgr.status_mgr.get_generation('copg', 'applied'), 1)
+        canonical = runtime / 'copg.ack.json'
+        compat = runtime / 'copg.json'
+        self.assertEqual(canonical.read_bytes(), compat.read_bytes())
+        self.assertEqual(canonical.stat().st_ino, compat.stat().st_ino)
+        for process, command, response in ((old_process, 'fail', 'rejected'),
+                                           (current_process, 'repeat', 'rejected'),
+                                           (current_process, 'fail', 'published'),
+                                           (current_process, 'observe', 'rejected')):
+            process.stdin.write(command + '\n')
+            process.stdin.flush()
+            self.assertTrue(select.select([process.stdout], [], [], 10)[0])
+            self.assertEqual(process.stdout.readline(), response + '\n')
+        self.assertEqual(self.mgr.status_mgr.generate_report()['engines']['copg']['status'], 'FAILED')
+        self.assertEqual({p.name: p.read_bytes() for p in self.data_dir.glob('pif.*')}, pif_before)
+
+    def test_counter_repair_restarts_ack_publication_without_stale_republish(self):
+        self.assert_counter_repair_ack()
+
+    def test_counter_repair_replaces_compatibility_only_ack(self):
+        self.assert_counter_repair_ack(compat_only=True)
+
+    def test_counter_repair_recovers_before_ack_publication(self):
+        self.assert_counter_repair_ack(stop_after=2)
 
     def test_legacy_ack_does_not_clear_reload_pending(self):
         self.configure()

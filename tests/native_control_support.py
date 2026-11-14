@@ -31,13 +31,20 @@ int main(int argc, char **argv) {
     ack.engine = "copg";
     ack.eventType = kaorios::stringToAckEventType(argv[2]);
     if (!kaorios::bindRuntimeAckToSnapshot(ack, snapshot) ||
-        !kaorios::writeRuntimeAckDirect(std::string(argv[1]) + "/runtime", ack)) return 2;
+        !kaorios::writeRuntimeAckForCurrentConfig(argv[1], ack)) return 2;
     std::cout << "ready\\n" << std::flush;
-    std::cin.get();
+    std::string command;
+    while (std::getline(std::cin, command)) {
+        if (command == "fail") { ack.eventType = kaorios::AckEventType::APPLY_FAILED; ack.initResult = -1; }
+        else if (command == "observe") { ack.eventType = kaorios::AckEventType::HOOK_OBSERVED; ack.initResult = 0; }
+        else if (command != "repeat") return 1;
+        std::cout << (kaorios::writeRuntimeAckForCurrentConfig(argv[1], ack)
+            ? "published\\n" : "rejected\\n") << std::flush;
+    }
 }
 ''')
     compiler = ["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror"]
-    subprocess.run([*compiler, str(ROOT / "cli/helperctl/helperctl.cpp"), "-o", str(control)], check=True)
+    subprocess.run([*compiler, "-DKAORIOS_TEST_FAULTS", str(ROOT / "cli/helperctl/helperctl.cpp"), "-o", str(control)], check=True)
     subprocess.run([*compiler, "-I", str(ROOT), str(source), "-o", str(producer)], check=True)
     return control, producer
 

@@ -425,10 +425,10 @@ void HmaEngine::postServerSpecialize(const zygisk::ServerSpecializeArgs *args) {
                         read(companion_sock, &resp, sizeof(resp));
                         close(companion_sock);
                     } else {
-                        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+                        writeRuntimeAckForCurrentConfig(data_dir_, ack);
                     }
                 } else {
-                    writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+                    writeRuntimeAckForCurrentConfig(data_dir_, ack);
                 }
             }
         }

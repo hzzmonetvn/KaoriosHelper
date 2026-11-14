@@ -2,7 +2,7 @@
 
 ## Evidence checkpoint — 2026-11-14
 
-Current implementation `bef592c`. The original five read-only reports for baseline `05a786f` are historical findings, not current execution results. The native synchronization/persistence/ACK-v2 follow-up replaces the earlier unsupported-sync and constant-generation paths. Remaining gaps below prevent an end-to-end completion claim. See [APP_MODULE_CONTRACT.md](APP_MODULE_CONTRACT.md) for exact implemented semantics.
+The synchronization/persistence/ACK-v2 implementation starts at `bef592c`; the generation/COPG follow-up is based on `f4d1143`. The original five read-only reports for baseline `05a786f` are historical findings, not current execution results. The native follow-up replaces the earlier unsupported-sync and constant-generation paths. Remaining gaps below prevent an end-to-end completion claim. See [APP_MODULE_CONTRACT.md](APP_MODULE_CONTRACT.md) for exact implemented semantics.
 
 ## Implemented changes and limits
 
@@ -13,6 +13,22 @@ Current implementation `bef592c`. The original five read-only reports for baseli
 - `config sync` reads allowlisted Global preferences through bounded direct-argv subprocesses and adapts a supported subset. It prevalidates a batch, merges supplied fields and performs no write-back. Two equal captures are not a provider transaction. Explicit legacy migration and validated rollback are implemented, not complete upstream schema migrations.
 - `kaorios.json` stores mapped scalar Global preferences, not an implemented Kaorios runtime backend.
 - ACK v2 binds exact consumer snapshot bytes and native generation to a fresh request, boot and live process identity. Strict parsing and monotonic publication reject stale/duplicate evidence. Later disk bytes never relabel an older producer snapshot. Python status/runtime compatibility delegates to native control rather than interpreting weaker ACKs independently.
+
+## Generation/COPG audit follow-up
+
+The following regressions were reproduced against the pre-fix implementation and covered through the actual compiled CLI/adapters:
+
+| Finding | Follow-up behavior | Verification |
+|---|---|---|
+| D1: corrupt requested generation aborts boot preparation | Treat malformed requested metadata as stale; renew with the valid stored generation and fresh token. Invalid managed engines are reported without blocking valid-engine renewals; overall exit remains nonzero for those failures | Malformed/signed/overflow/trailing-junk counters, valid unrelated engine, invalid stored counter/payload |
+| D2: corrupt stored generation aborts the complete status document | Engine-local `INVALID_CONFIG`, zero applied evidence, no automatic repair; ordinary mutations remain strict. Explicit migration validates exact payload bytes and starts a fresh generation-1 request identity | Stored/requested corruption, complete report, no metadata writes, strict mutation failures, explicit repair, stale ACK rejection |
+| D3: sync shadows legacy-only COPG data | Require explicit migration before canonical publication, preserve legacy bytes/manual data, reject `sync all` before publishing other staged changes | Missing Settings no-op, rejected single/batch sync, migration then merge |
+| D4: games-only COPG JSON overwrites stored enablement | Preserve existing `enabled` unless JSON enablement or scalar toggle is supplied; infer a default only if stored enablement is absent | Stored true/false, empty/nonempty games, explicit JSON/scalar combinations |
+| D4b: semantic no-op wording exceeds implementation | Document equality of adapted JSON, not arbitrary runtime equivalence; existing HMA/PIF normalization may advance generation once | Scope sorting/deduplication and PIF flag conversion; repeated normalized sync leaves generation/request unchanged |
+| F1/R2/R3: migration reports success without a payload; recovery guidance selects ineffective commands | Fail migration on corrupt stored metadata without usable payload; direct recovery through valid backup restoration, explicit unmanaged migration, supported runtime renewal or Kaorios config republication as appropriate | Missing/empty payload, single/all migration, no publication, storage-only requested corruption and generation-zero requested corruption |
+| N1: old high-generation ACK blocks publication after counter repair to 1 | Companion and direct fallbacks hold config-to-runtime locks, validate current request/payload and supersede only different-token prior evidence. Current-request monotonic/failure-terminal checks and raw writer ordering remain | Real CLI migration plus persistent native ACK producer; canonical/compat-only prior ACKs, journal interruption/recovery, stale producer rejection, duplicate/terminal failure, unrelated PIF preservation |
+
+The first local follow-up checkpoint passed 147 Python tests; independent diff review then found F1/R2/R3/N1 and regression tests reproduced them. After their fixes, full discovery passed 153 tests in 72.160s with one Android-artifact skip, native build, CTest 1/1 and 38 native cases. Exact-revision CI and Android transport/device acceptance are separate evidence. This fixes control/preservation/publication regressions, not the runtime gaps below.
 
 ## Open runtime findings
 

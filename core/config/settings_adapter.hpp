@@ -115,7 +115,8 @@ inline void copg(Json &out, const std::map<std::string, std::string> &values) {
         if (input.contains("enabled") && !input["enabled"].is_boolean()) throw std::runtime_error("Settings boolean is invalid");
         if (input.contains("debug") && (!input["debug"].is_boolean() || input["debug"].get<bool>()))
             throw std::runtime_error("Settings COPG semantics unsupported");
-        enabled = input.value("enabled", !input["games"].empty());
+        if (input.contains("enabled")) enabled = input["enabled"].get<bool>();
+        else if (!out.contains("enabled")) enabled = !input["games"].empty();
         const std::map<std::string, std::string> fields = {
             {"MODEL", "model"}, {"BRAND", "brand"}, {"MANUFACTURER", "manufacturer"},
             {"DEVICE", "device"}, {"PRODUCT", "product"}, {"FINGERPRINT", "fingerprint"}, {"RELEASE", "release"}

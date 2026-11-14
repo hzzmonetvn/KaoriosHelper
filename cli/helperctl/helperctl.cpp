@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <cstring>
 #include <cerrno>
+#include <charconv>
 #include "../../third_party/json/nlohmann/json.hpp"
 #if __has_include(<ack_protocol.hpp>)
 #include <ack_protocol.hpp>
@@ -193,8 +194,10 @@ public:
             s.runtimeAvailable = name == "pif" || name == "copg" || (name == "hma" && dexExists);
             s.deviceVerified = false;
             s.lastVerifiedTimestamp = 0;
-            s.storedGeneration = parseGeneration(store.read(name + ".stored_gen", true));
-            s.requestedGeneration = parseGeneration(store.read(name + ".requested_gen", true));
+            const auto stored = readGeneration(store.read(name + ".stored_gen", true));
+            const auto requested = readGeneration(store.read(name + ".requested_gen", true));
+            s.storedGeneration = stored.value_or(0);
+            s.requestedGeneration = requested.value_or(0);
             const auto content = store.read(configName(name), true);
             s.configValid = validConfig(name, content);
             s.pendingReload = store.exists(name + ".reload_pending");
@@ -203,7 +206,8 @@ public:
             const auto request = nlohmann::json::parse(store.read(name + ".request.json", true), nullptr, false);
             const auto token = request.is_object() && request.contains("requestId") && request["requestId"].is_string()
                 ? request["requestId"].get<std::string>() : "";
-            bool current = s.enabled && s.configValid && s.runtimeAvailable && hasAck &&
+            bool current = stored && requested && s.storedGeneration > 0 &&
+                s.enabled && s.configValid && s.runtimeAvailable && hasAck &&
                 s.storedGeneration == s.requestedGeneration &&
                 validRequest(request) &&
                 ack.timestamp >= request["notBeforeMillis"].get<uint64_t>() &&
@@ -217,6 +221,24 @@ public:
             s.appliedGeneration = initialized ? ack.configGeneration : 0;
             s.lastRuntimeEvent = hasAck ? kaorios::ackEventTypeToString(ack.eventType) : "NONE";
             s.lastRuntimeTimestamp = hasAck ? ack.timestamp : 0;
+            if (!stored || !requested) {
+                s.status = "INVALID_CONFIG";
+                s.hookInitialized = "NOT_INITIALIZED";
+                s.pendingReload = true;
+                s.lastError = "Invalid configuration generation metadata";
+                if (!stored || *stored == 0) {
+                    auto migrationContent = content;
+                    if (migrationContent.empty() && name == "copg") migrationContent = store.read("COPG.json", true);
+                    s.details = validConfig(name, migrationContent)
+                        ? "Run config migrate " + name + " to repair metadata explicitly"
+                        : "Restore valid " + configName(name) + " from backup, then run config migrate " + name;
+                } else if (name == "kaorios") {
+                    s.details = "Republish the validated stored payload with config set kaorios FILE to renew request metadata";
+                } else {
+                    s.details = "Renew request metadata with reload " + name + "; prepare-boot also renews valid managed configurations";
+                }
+                continue;
+            }
             if (name == "kaorios") {
                 s.status = s.configValid ? "INCOMPLETE_RUNTIME" : "NOT_CONFIGURED";
                 s.hookInitialized = "INCOMPLETE_RUNTIME";
@@ -464,19 +486,28 @@ public:
         try {
             kaorios::NativeStore store(data_dir_);
             kaorios::NativeStore::Changes changes;
+            bool failed = false;
             for (const auto *engine : {"hma", "pif", "tee", "copg"}) {
                 const std::string name(engine);
-                const auto generation = parseGeneration(store.read(name + ".stored_gen", true));
-                if (generation == 0) continue; // Legacy payloads still need explicit migration.
-                if (!validConfig(name, store.read(configName(name), true)))
-                    throw std::runtime_error("Boot configuration validation failed");
+                const auto generation = readGeneration(store.read(name + ".stored_gen", true));
+                if (!generation) {
+                    std::cerr << name << ": invalid stored generation; explicit migration required\n";
+                    failed = true;
+                    continue;
+                }
+                if (*generation == 0) continue; // Legacy payloads still need explicit migration.
+                if (!validConfig(name, store.read(configName(name), true))) {
+                    std::cerr << name << ": boot configuration validation failed\n";
+                    failed = true;
+                    continue;
+                }
                 const auto request = nlohmann::json::parse(store.read(name + ".request.json", true), nullptr, false);
-                if (parseGeneration(store.read(name + ".requested_gen", true)) == generation && validRequest(request)) continue;
-                stageRequest(changes, name, generation);
+                if (readGeneration(store.read(name + ".requested_gen", true)) == generation && validRequest(request)) continue;
+                stageRequest(changes, name, *generation);
             }
             store.transaction(changes);
-            std::cout << "Boot requests prepared; runtime acknowledgement pending\n";
-            return 0;
+            std::cout << "Valid engine boot requests prepared; runtime acknowledgement pending\n";
+            return failed ? 1 : 0;
         } catch (const std::exception &e) { std::cerr << e.what() << "\n"; return 1; }
     }
 
@@ -569,13 +600,20 @@ public:
         return content;
     }
 
-    static uint64_t parseGeneration(const std::string &text) {
+    static std::optional<uint64_t> readGeneration(const std::string &text) {
         if (text.empty()) return 0;
-        if (text[0] < '0' || text[0] > '9') throw std::runtime_error("Invalid configuration generation");
-        size_t end = 0;
-        const auto generation = std::stoull(text, &end);
-        if (text.find_first_not_of(" \r\n\t", end) != std::string::npos) throw std::runtime_error("Invalid configuration generation");
+        uint64_t generation = 0;
+        const auto result = std::from_chars(text.data(), text.data() + text.size(), generation);
+        if (result.ec != std::errc{} || result.ptr == text.data()) return std::nullopt;
+        for (const char *end = result.ptr; end != text.data() + text.size(); ++end)
+            if (*end != ' ' && *end != '\r' && *end != '\n' && *end != '\t') return std::nullopt;
         return generation;
+    }
+
+    static uint64_t parseGeneration(const std::string &text) {
+        const auto generation = readGeneration(text);
+        if (!generation) throw std::runtime_error("Invalid configuration generation; explicit migration required");
+        return *generation;
     }
 
     static bool validRequest(const nlohmann::json &request) {
@@ -672,6 +710,8 @@ public:
                 const auto existing = store.read(configName(name), true);
                 const auto adapted = kaorios::adaptSettings(name, existing, settings);
                 if (!adapted) continue;
+                if (name == "copg" && existing.empty() && store.exists("COPG.json"))
+                    throw std::runtime_error("Legacy COPG configuration requires explicit migration before synchronization");
                 stageConfig(store, changes, name, *adapted);
                 changed.push_back(name);
             }
@@ -694,12 +734,20 @@ public:
             kaorios::NativeStore::Changes changes;
             for (const auto &name : engines) {
                 const auto filename = configName(name);
-                const auto generation = parseGeneration(store.read(name + ".stored_gen", true));
+                const auto generation = readGeneration(store.read(name + ".stored_gen", true));
                 auto content = store.read(filename, true);
                 if (content.empty() && name == "copg") content = store.read("COPG.json", true);
-                if (content.empty()) continue;
+                if (content.empty()) {
+                    if (!generation) throw std::runtime_error(name + ": valid payload required before metadata repair");
+                    continue;
+                }
                 if (!validConfig(name, content)) throw std::runtime_error("Legacy configuration validation failed");
-                if (generation == 0) stageConfig(store, changes, name, content);
+                if (!generation) {
+                    // Lost counter history is repaired only by this explicit command.
+                    changes[filename] = content;
+                    changes[name + ".stored_gen"] = "1\n";
+                    stageRequest(changes, name, 1);
+                } else if (*generation == 0) stageConfig(store, changes, name, content);
             }
             store.transaction(changes);
             std::cout << "Migration recorded; existing schemas and payload fields preserved\n";

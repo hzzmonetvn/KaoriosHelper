@@ -648,10 +648,10 @@ void CopgEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const 
             read(sock, &resp, sizeof(resp));
             close(sock);
         } else if (geteuid() == 0) {
-            writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+            writeRuntimeAckForCurrentConfig(data_dir_, ack);
         }
     } else if (geteuid() == 0) {
-        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+        writeRuntimeAckForCurrentConfig(data_dir_, ack);
     }
 
     // If stealth mode is requested and no persistent native hooks remain, unload

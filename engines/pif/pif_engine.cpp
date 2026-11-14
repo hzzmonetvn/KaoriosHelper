@@ -473,10 +473,10 @@ void PifEngine::postAppSpecialize(const zygisk::AppSpecializeArgs *args, const s
             read(sock, &resp, sizeof(resp));
             close(sock);
         } else if (geteuid() == 0) {
-            writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+            writeRuntimeAckForCurrentConfig(data_dir_, ack);
         }
     } else if (geteuid() == 0) {
-        writeRuntimeAckDirect(data_dir_ + "/runtime", ack);
+        writeRuntimeAckForCurrentConfig(data_dir_, ack);
     }
 }
 

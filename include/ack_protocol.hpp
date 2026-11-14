@@ -430,7 +430,10 @@ inline bool runtimeAckAdvances(const RuntimeAck &previous, const RuntimeAck &nex
         (next.processStartTicks == previous.processStartTicks && next.timestamp > previous.timestamp);
 }
 
-inline bool writeRuntimeAckDirect(const std::string &runtime_dir, const RuntimeAck &ack) {
+namespace detail {
+// Only the locked current-config writer may supersede a different request.
+inline bool publishRuntimeAck(const std::string &runtime_dir, const RuntimeAck &ack,
+                              const std::string &currentRequestId) {
     std::string err;
     if (!validateRuntimeAck(ack, err) || !runtimeAckHasLiveIdentity(ack)) {
         return false;
@@ -445,7 +448,9 @@ inline bool writeRuntimeAckDirect(const std::string &runtime_dir, const RuntimeA
     if (locked != 0) { close(dir); return false; }
     RuntimeAck previous;
     if (!runtimeAckHasLiveIdentity(ack) ||
-        (readRuntimeAckAt(dir, ack.engine, previous) && !runtimeAckAdvances(previous, ack))) {
+        (readRuntimeAckAt(dir, ack.engine, previous) &&
+         (currentRequestId.empty() || previous.requestId == currentRequestId) &&
+         !runtimeAckAdvances(previous, ack))) {
         close(dir); return false;
     }
     std::string target = ack.engine + ".ack.json";
@@ -478,6 +483,11 @@ inline bool writeRuntimeAckDirect(const std::string &runtime_dir, const RuntimeA
     unlinkat(dir, compat_staging.c_str(), 0);
     close(dir);
     return ok;
+}
+} // namespace detail
+
+inline bool writeRuntimeAckDirect(const std::string &runtime_dir, const RuntimeAck &ack) {
+    return detail::publishRuntimeAck(runtime_dir, ack, "");
 }
 
 inline bool readRuntimeAck(const std::string &runtime_dir, const std::string &engine, RuntimeAck &out) {
