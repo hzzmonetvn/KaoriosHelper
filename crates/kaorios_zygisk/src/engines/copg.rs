@@ -714,7 +714,7 @@ impl CopgEngine {
         }
         #[cfg(not(target_os = "android"))]
         {
-            let _ = (api, process_name, fs::read_to_string);
+            let _ = (api, process_name, fs::read_to_string::<&str>);
             self.libraries_discovered = 0;
             self.hooks_attempted = 0;
             self.hooks_registered = 0;
