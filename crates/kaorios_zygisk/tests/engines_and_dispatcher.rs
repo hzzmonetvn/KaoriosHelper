@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 HzzMonet / Kaorios Project
 
-use kaorios_zygisk::dispatcher::KaoriosDispatcher;
-use kaorios_zygisk::engine::Engine;
-use kaorios_zygisk::engines::copg::CopgEngine;
-use kaorios_zygisk::engines::hma::HmaEngine;
-use kaorios_zygisk::engines::pif::PifEngine;
-use kaorios_zygisk::engines::tee::TeeEngine;
+use kaorioshelper::dispatcher::KaoriosDispatcher;
+use kaorioshelper::engine::Engine;
+use kaorioshelper::engines::copg::CopgEngine;
+use kaorioshelper::engines::hma::HmaEngine;
+use kaorioshelper::engines::pif::PifEngine;
+use kaorioshelper::engines::tee::TeeEngine;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
