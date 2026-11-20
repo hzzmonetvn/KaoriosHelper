@@ -1,10 +1,10 @@
-"""Integration fixtures use the actual native CLI and a live native ACK producer."""
+"""Integration fixtures use the actual Rust CLI and a live Rust ACK producer."""
 
-import atexit
 import hashlib
 import json
 import os
 import select
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -16,36 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @lru_cache(maxsize=1)
 def native_binaries():
-    build = tempfile.TemporaryDirectory(prefix="native control ; ")
-    atexit.register(build.cleanup)
-    root = Path(build.name)
-    control = root / "helperctl"
-    producer = root / "ack-producer"
-    source = root / "producer.cpp"
-    source.write_text('''#include "core/config/runtime_snapshot.hpp"
-#include <iostream>
-int main(int argc, char **argv) {
-    if (argc != 3) return 1;
-    auto snapshot = kaorios::readRuntimeConfigSnapshot(argv[1], "copg", "spoof.json");
-    kaorios::RuntimeAck ack;
-    ack.engine = "copg";
-    ack.eventType = kaorios::stringToAckEventType(argv[2]);
-    if (!kaorios::bindRuntimeAckToSnapshot(ack, snapshot) ||
-        !kaorios::writeRuntimeAckForCurrentConfig(argv[1], ack)) return 2;
-    std::cout << "ready\\n" << std::flush;
-    std::string command;
-    while (std::getline(std::cin, command)) {
-        if (command == "fail") { ack.eventType = kaorios::AckEventType::APPLY_FAILED; ack.initResult = -1; }
-        else if (command == "observe") { ack.eventType = kaorios::AckEventType::HOOK_OBSERVED; ack.initResult = 0; }
-        else if (command != "repeat") return 1;
-        std::cout << (kaorios::writeRuntimeAckForCurrentConfig(argv[1], ack)
-            ? "published\\n" : "rejected\\n") << std::flush;
-    }
-}
-''')
-    compiler = ["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror"]
-    subprocess.run([*compiler, "-DKAORIOS_TEST_FAULTS", str(ROOT / "cli/helperctl/helperctl.cpp"), "-o", str(control)], check=True)
-    subprocess.run([*compiler, "-I", str(ROOT), str(source), "-o", str(producer)], check=True)
+    control = ROOT / "target/debug/helperctl"
+    producer = ROOT / "target/debug/ack_producer"
+    if not control.is_file() or not producer.is_file():
+        if shutil.which("cargo") is None:
+            raise unittest.SkipTest("cargo not installed locally; runs in CI")
+        subprocess.run(
+            ["cargo", "build", "-p", "helperctl", "--features", "test-faults", "--bins"],
+            cwd=ROOT,
+            check=True,
+        )
     return control, producer
 
 

@@ -15,20 +15,20 @@ Evidence checkpoint: 2026-11-14, implementation `bef592c`. This is source capabi
 |---|---|---|
 | Zygisk entry, companion registration, process dispatch | IMPLEMENTED | `zygisk/src/{entry,dispatcher}.cpp`; loader compatibility remains DEVICE_UNVERIFIED |
 | Per-engine callback exception isolation | IMPLEMENTED | Dispatcher guards added in `ca95c37`; not a guarantee against native faults or bootloops |
-| HMA privileged config snapshot and DEX loader | PARTIAL | `engines/hma/hma_engine.cpp`; Java/native entrypoint handoff remains defective |
-| HMA remote-client package filtering | PARTIAL | Process-local proxies in `PackageManagerHook.java` do not establish service-side Binder interception |
-| HMA framework method backend / Settings hooks | MISSING | Ownership declarations are not installed hooks |
-| PIF JNI Build assignments and native property hooks | IMPLEMENTED | `engines/pif/pif_engine.cpp`; actual callbacks and resulting values DEVICE_UNVERIFIED |
-| PIF custom provider / effective LKG recovery | STUB | Provider flag has no provider implementation; recovery state population remains incomplete |
+| HMA privileged config snapshot and DEX loader | IMPLEMENTED / DEVICE_UNVERIFIED | `engines/hma/hma_engine.cpp`, `dex/`; `ZygoteEntry` & `EntryPoint` share full `init(String)`/`getHookState()` contract, RFC 8259 `SimpleJson` parser and deferred `system_server` bootstrap |
+| HMA remote-client package filtering | PARTIAL / DEVICE_UNVERIFIED | `PackageManagerHook.java` wraps `Computer` (`mLiveComputer`/`mComputer`), `AppsFilterSnapshot` (`this$0`), `IPackageManager`, `ParceledListSlice`, `getInstallSourceInfo`, `applyPresets`/`ignoredPackagesForPresets`, and `extraOppositeAppList`; concrete non-interface `AppsFilter`/`Computer` classes remain unhooked without ART method replacement |
+| HMA SettingsProvider interception | PARTIAL / DEVICE_UNVERIFIED | `SettingsProviderHook.java` wraps in-process `IContentProvider` for `adb_enabled`, `development_settings_enabled`, `mock_location`, and `settingsTemplates` with system UID exemptions; hardware verification pending |
+| PIF JNI Build assignments and native property hooks | IMPLEMENTED / DEVICE_UNVERIFIED | `engines/pif/pif_engine.cpp`; handles PlayIntegrityFork v18 `VERSION.*`, `*api_level`, string flags, `pif.prop` fallback/migration; actual callbacks and resulting values DEVICE_UNVERIFIED |
+| PIF custom provider / effective LKG recovery | IMPLEMENTED / DEVICE_UNVERIFIED | In-memory LKG (`last_valid_props_` + snapshot) populated and restored on error with TEE `spoofProvider=0` enforcement; Java `CustomProvider`/`CustomKeyStoreSpi` (`es.chiteroman.playintegrityfix.EntryPoint`) bundled in `classes.dex` and installed pre/post-specialize when `spoofProvider=1` and TEE inactive; device verification pending |
 | TEE structural keybox inspection | PARTIAL | `engines/tee/tee_engine.cpp`; not cryptographic key/certificate validation |
 | TEE attestation runtime | BLOCKED | Runtime activity remains false; supervisor/interceptor/certgen dependency chain absent |
-| COPG profile selection, JNI and mapped-library PLT paths | PARTIAL | `engines/copg/copg_engine.cpp`; late-load coverage and measured application remain unverified |
-| COPG namespace CPU mount path | PARTIAL | Companion mutation path exists; lifecycle, confinement and rollback gaps remain |
-| Native config set/get/rollback/validate/status | IMPLEMENTED / DEVICE_UNVERIFIED | Native ingress, validated LKG and per-engine request generations; raw get and text mutation errors remain |
+| COPG profile selection, JNI, PLT and late-load paths | IMPLEMENTED / DEVICE_UNVERIFIED | `engines/copg/copg_engine.cpp`; `PACKAGES_*_DEVICE`, `cpu_only_packages`/`blacklist`, actual JNI assignment reporting and Bionic `libc.so` ShadowHook coverage for late-loaded `dlopen` libraries |
+| COPG namespace CPU mount & companion IPC | IMPLEMENTED / DEVICE_UNVERIFIED | `include/companion_{ipc,server}.hpp`; `exemptFd` pre-specialize session retention, bounded multi-command framing, live UID/namespace checks and trusted `cpuinfo_spoof` validation |
+| Native config set/get/rollback/validate/status | IMPLEMENTED / DEVICE_UNVERIFIED | Native ingress, validated LKG, per-engine request generations and `--redacted`/`summary` read (`redactedConfigRead`); text mutation errors remain |
 | Kaorios JSON storage | IMPLEMENTED | Allowlisted scalar Global mapping under `settingsGlobal`; not a Kaorios ROM runtime backend |
 | Settings.Global config synchronization | IMPLEMENTED SUBSET / DEVICE_UNVERIFIED | On-demand fixed-argv reads and source-derived adapters; unsupported HMA/COPG semantics fail before publication; no write-back/watcher |
 | Recoverable native transaction and rollback | IMPLEMENTED | Descriptor-relative redo journal and cooperating reader lock; arbitrary-reader atomic multi-file snapshots remain unsupported |
-| Legacy migration / complete upstream schema migration | PARTIAL | Explicit exact-byte legacy migration/native metadata and COPG canonical copy implemented; not a general schema-version migration engine |
+| Legacy migration / complete upstream schema migration | PARTIAL | Explicit exact-byte legacy migration/native metadata (`COPG.json`, `pif.prop` -> `pif.json`) and canonical copy implemented; not a general schema-version migration engine |
 | Runtime generation/snapshot linkage | IMPLEMENTED / DEVICE_UNVERIFIED | HMA/PIF/COPG bind ACK v2 to actual consumer snapshot, request, boot and live process; Android transport/lifecycle and full runtime remain PARTIAL |
 | Python and shell runtime parity | PARTIAL | Python status/runtime delegate to native; Action/boot scripts use native commands; legacy Python config persistence remains a separate domain |
 | Global boot mutations | IMPLEMENTED | Removal in `ca95c37` follows requirement 8; no compatibility exception permits global property/settings rewrites |

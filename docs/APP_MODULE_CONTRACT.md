@@ -1,6 +1,6 @@
 # App–module control contract
 
-Updated 2026-11-14 for the Settings synchronization and ACK-v2 implementation on `refactor/kaorioshelper-2`. Control/status protocol remains version 1; ACK v2 is a separately negotiated capability. The Toolbox app caller and Android device integration are not yet verified.
+Updated 2026-11-18 for the Settings synchronization, ACK-v2, and Kaorios Toolbox app integration (`:app` and `:app-rust`). Control/status protocol remains version 1; ACK v2 is a separately negotiated capability. Host app callers/parsers are integrated in source; physical Android device runtime verification remains pending.
 
 ## Ownership and transport
 
@@ -22,7 +22,8 @@ For `config set`/explicit-source validation, stage a regular file owned by the e
 | `config sync ENGINE` / `config sync all` | Read selected Global keys, adapt/merge supplied fields, prevalidate every changed engine, then publish one recoverable transaction |
 | `config migrate ENGINE` / `config migrate all` | Validate payloads and preserve exact bytes while initializing legacy metadata or explicitly repairing malformed stored counters; COPG may copy `COPG.json` into `spoof.json` |
 | `config status ENGINE` | Configuration validation-only text, not synchronization/application state |
-| `config get ENGINE` | Raw configuration payload; not a redacted metadata API |
+| `config get [--redacted] ENGINE` | Stored configuration payload; `--redacted` (or `config summary ENGINE`) strips `<PrivateKey>`, `<Certificate>`, PEM blocks and sensitive identifier fields (`android_id`, `serial`, tokens) |
+| `config summary ENGINE` | Alias for `config get --redacted ENGINE` |
 | `enable ENGINE` / `disable ENGINE` | Record desired enablement and a fresh request in one transaction; restart may still be required |
 | `reload ENGINE` / `reload all` | Fresh request token at the same stored generation; exit 0 means recorded, not applied |
 | `prepare-boot` | Renew stale/malformed requested metadata for valid managed configurations; leave valid current-boot requests unchanged. Invalid stored counters/payloads return nonzero after other valid engines are prepared; no implicit legacy migration |
@@ -37,12 +38,12 @@ Root-manager Action runs `config sync all` followed by status only if sync succe
 
 All capability values are boolean:
 
-- True: `configSet`, `configValidate`, `configRollback`, `settingsGlobalSync`, `configMigration`, `recoverableConfigTransactions`, `runtimeAckV2`.
-- False: `atomicMultiFileSnapshot`, `redactedConfigRead`, `structuredMutationErrors`, `deviceVerification`, `screenCapture`.
+- True: `configSet`, `configValidate`, `configRollback`, `settingsGlobalSync`, `configMigration`, `recoverableConfigTransactions`, `runtimeAckV2`, `redactedConfigRead`.
+- False: `atomicMultiFileSnapshot`, `structuredMutationErrors`, `deviceVerification`, `screenCapture`.
 
 A true synchronization capability advertises the implemented adapter subset, not complete parity with every framework rule. Preserve unknown/false capabilities conservatively. ACK protocol version 2 does not change control/status schema version 1.
 
-`config get` can expose private configuration. Do not use it for TEE/keybox display, logging or analytics. A redacted metadata API remains outstanding.
+Raw `config get ENGINE` can expose private configuration; callers displaying configuration metadata, logs or diagnostics must use `config get --redacted ENGINE` (or `config summary ENGINE`).
 
 ## Settings.Global adapters
 
@@ -131,3 +132,20 @@ Compatibility `get_runtime_ack_status()` maps native `READY`/`DEVICE_UNVERIFIED`
 Host tests execute the real C++ CLI, adapters, recovered native snapshots and live-process ACK fixtures. Native producer metadata tests capture actual PIF/COPG submissions. Settings transport tests cover bounds, deadlines and descendant cleanup. Python compatibility tests call the real native CLI rather than fabricating a second status evaluator. Boot/Action shell fixtures verify delegation and error propagation.
 
 These tests do not establish Android Settings permissions, root-manager lifecycle ordering, SELinux/proc visibility, ART hook behavior, app caller compatibility or device verification. Required next work includes app path/caller/parser integration, bounded privileged execution, redacted metadata, structured mutation errors, remaining backends and physical-device tests. Diagnostic CI ZIPs and release acceptance remain separate; upstream/license gates are unchanged.
+
+## App integration status
+
+Updated 2026-11-18. Both Kaorios Toolbox frontends (`:app` Kotlin/Compose and `:app-rust` Rust/egui) now integrate `helperctl` control against `/data/adb/modules/kaorioshelper/helperctl.sh` and remove obsolete `kaorios_helper` / direct COPG paths:
+
+| Component | Integrated behavior |
+|---|---|
+| `KaoriosHelperControl.kt`, `SystemManager.kt`, `ToolboxBackend.kt` (`:app`) | Wraps `version --json`, `status --json`, `enable`/`disable`, `reload`, `config sync`/`migrate`/`rollback`/`validate`, `config get --redacted`, and stdin-streamed staging (`cat > "$_STAGE"` in `/data/adb/.kaorios_stage`, mode `0600`, no payload interpolation in argv/shell). Separate stdout/stderr capture (`20s` timeout, 16 MiB stream cap); COPG helpers delegate to `helperctl`. `ToolboxBackend` recognizes active `kaorioshelper` as a valid backend for tool routes. |
+| `ModuleControlScreen.kt`, `DebugDiagnosticsScreen.kt`, `BackendToolRoute.kt`, `MainScreen.kt` (`:app`) | Dedicated Module Control screen (`module` / `module_control`), real module probe in Diagnostics, and module-status surfacing when framework is absent. Displays redacted config only via `config get --redacted`. |
+| `kaorios_core::helperctl`, `kaorios_core::system` | Pure-Rust models (`HelperVersion`, `HelperStatus`, `EngineStatus` with string `hookInitialized` and `Toggle` flags), command/staging script builders, and PIF/COPG (`"games"` -> `"profiles"`)/HMA adapters. Aligned constants (`KAORIOS_PIF_CONFIG = "kaorios_pif_json"`, `KAORIOS_HIDE_DEV = "kaorios_hide_devlist"`). |
+| `RustPlatformBridge.java`, `bridge.rs`, `android_bridge.rs`, `worker.rs`, `screens/module_control.rs` (`:app-rust`) | JNI `runSuCommandJson` (separate bounded stdout/stderr, stdin forwarding, `20s` timeout), `BackendPresence::ModuleActive`, async `helperctl` worker actions, full egui Module Control screen + redacted modal, Diagnostics probe card, and headless `egui` mock coverage. |
+
+### Remaining gaps
+
+- Physical-device Android ART/SELinux/binder/zygisk runtime verification remains unverified (`deviceVerification` capability stays `false`).
+- Structured mutation error codes remain unimplemented (`structuredMutationErrors` stays `false`); UI inspects status after nonzero exit codes.
+- `app/` Gradle compilation and `cargo test` execution were not run on this host (no Android SDK or `cargo`/`rustc` toolchain installed here).

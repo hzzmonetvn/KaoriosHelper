@@ -130,7 +130,8 @@ if [ ! -f "$MODPATH/data/pif.json" ]; then
   ui_print "  Supply a valid custom profile via 'helperctl config set pif <file.json>'."
 fi
 
-[ -f "$MODPATH/data/spoof.json" ] || cat > "$MODPATH/data/spoof.json" << 'EOF'
+[ -f "$MODPATH/data/spoof.json" ] || {
+  cat > "$MODPATH/data/spoof.json" << 'EOF'
 {
   "version": 1,
   "enabled": false,
@@ -141,8 +142,11 @@ fi
   "profiles": {}
 }
 EOF
+  [ -f "$MODPATH/data/copg.stored_gen" ] || printf '1\n' > "$MODPATH/data/copg.stored_gen"
+}
 
-[ -f "$MODPATH/data/hma.json" ] || cat > "$MODPATH/data/hma.json" << 'EOF'
+[ -f "$MODPATH/data/hma.json" ] || {
+  cat > "$MODPATH/data/hma.json" << 'EOF'
 {
   "configVersion": 2,
   "detailLog": false,
@@ -161,6 +165,8 @@ EOF
   "scope": {}
 }
 EOF
+  [ -f "$MODPATH/data/hma.stored_gen" ] || printf '1\n' > "$MODPATH/data/hma.stored_gen"
+}
 
 # ABI binary selection (preserve both 64-bit and 32-bit ARM libraries on mixed-ABI devices)
 if [ -d "$MODPATH/zygisk" ]; then

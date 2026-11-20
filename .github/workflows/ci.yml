@@ -3,41 +3,54 @@ name: KaoriosHelper CI
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master, 'refactor/**' ]
+    branches: [ main, master, 'refactor/**', 'hzzmonetvn/**' ]
   pull_request:
     branches: [ main, master ]
 
 jobs:
   test-host:
-    name: Host Tests (C++20 & Python)
+    name: Host Tests (Rust Workspace & Python)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Build Environment
+      - name: Set up Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Set up Python
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake g++-13 python3
+          sudo apt-get install -y python3
 
-      - name: Build & Run Native C++ Tests
-        run: |
-          mkdir -p build && cd build
-          cmake -DCMAKE_CXX_COMPILER=g++-13 ..
-          make -j$(nproc)
-          ./test_native
+      - name: Check Rust Formatting
+        run: cargo fmt --all -- --check
 
-      - name: Run Python Management Test Suite
+      - name: Run Rust Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run Rust Workspace Tests
+        run: cargo test --workspace
+
+      - name: Build helperctl (test-faults) & Run Python Management Test Suite
         run: |
+          cargo build -p helperctl --features test-faults
           PYTHONPATH=. python3 -m unittest discover -s tests -p "test_*.py"
 
   build-android:
-    name: Android Multi-ABI Cross-Compilation & Packaging
+    name: Android Multi-ABI Rust Cross-Compilation & Packaging
     needs: test-host
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Set up Rust Toolchain (Android Targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android, armv7-linux-androideabi
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -61,7 +74,7 @@ jobs:
           chmod +x dex/build_dex.sh
           bash dex/build_dex.sh
 
-      - name: Cross-Compile Native Multi-ABI Libraries & CLI
+      - name: Cross-Compile Rust Multi-ABI Libraries & CLI
         env:
           ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
         run: |

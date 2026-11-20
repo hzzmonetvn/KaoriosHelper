@@ -136,6 +136,9 @@ struct JNIEnv_ {
     jint CallStaticIntMethod(jclass clazz, jmethodID methodID, ...) {
         return 0;
     }
+    jboolean CallStaticBooleanMethod(jclass clazz, jmethodID methodID, ...) {
+        return 0;
+    }
     jint CallIntMethod(jobject obj, jmethodID methodID, ...) {
         return 0;
     }
@@ -153,6 +156,13 @@ struct JNIEnv_ {
     }
     void DeleteGlobalRef(jobject gref) {}
     void DeleteLocalRef(jobject obj) {}
+
+    jint RegisterNatives(jclass clazz, const JNINativeMethod* methods, jint nMethods) {
+        (void)clazz;
+        (void)methods;
+        (void)nMethods;
+        return 0;
+    }
 
     void ExceptionClear() {}
     jboolean ExceptionCheck() { return 0; }

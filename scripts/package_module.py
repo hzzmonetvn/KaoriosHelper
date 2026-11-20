@@ -58,6 +58,11 @@ def build_zip(
         "zygisk/arm64-v8a.so",
         "zygisk/armeabi-v7a.so",
         "classes.dex",
+        "NOTICE",
+        "licenses/AGPL-3.0.txt",
+        "licenses/Apache-2.0.txt",
+        "licenses/MIT.txt",
+        "licenses/ISC-BSD.txt",
     ]
 
     for rel_path in required_files:

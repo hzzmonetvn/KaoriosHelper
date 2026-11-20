@@ -1,0 +1,13 @@
+[package]
+name = "kaorios_fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kaorios_fixture"
+path = "src/main.rs"
+
+[dependencies]
+libc.workspace = true
+serde_json.workspace = true

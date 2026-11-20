@@ -221,14 +221,24 @@ class ConfigManager:
             raise ConfigValidationError("PIF config must be a JSON object")
 
         # Verify required property keys
-        for key in ["MANUFACTURER", "MODEL", "FINGERPRINT", "BRAND", "PRODUCT", "DEVICE"]:
+        for key in [
+            "MANUFACTURER", "MODEL", "FINGERPRINT", "BRAND", "PRODUCT", "DEVICE",
+            "BOARD", "HARDWARE", "VERSION.RELEASE", "VERSION.INCREMENTAL", "VERSION.SECURITY_PATCH",
+        ]:
             if key in data and not isinstance(data[key], str):
                 raise ConfigValidationError(f"PIF field {key} must be a string")
 
-        # Verify advanced flags if present
+        # Verify advanced flags if present (supports PIF v18 string "0"/"1"/"true"/"false" flags)
         for flag in ["spoofBuild", "spoofProps", "spoofProvider", "spoofSignature"]:
-            if flag in data and not isinstance(data[flag], (int, bool)):
-                raise ConfigValidationError(f"PIF flag {flag} must be an integer or boolean")
+            if flag in data:
+                val = data[flag]
+                if isinstance(val, str):
+                    if val.strip().lower() not in ("0", "1", "true", "false"):
+                        raise ConfigValidationError(
+                            f"PIF flag {flag} string value must be one of 0/1/true/false"
+                        )
+                elif not isinstance(val, (int, bool)):
+                    raise ConfigValidationError(f"PIF flag {flag} must be an integer, boolean, or flag string")
 
         return data
 

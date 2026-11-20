@@ -34,14 +34,14 @@ The first local follow-up checkpoint passed 147 Python tests; independent diff r
 
 | Area | Status | Required evidence / missing contract |
 |---|---|---|
-| HMA entrypoint | PARTIAL | Preferred Java wrapper lacks the native init/state interface; snapshot handoff and exception handling need contract tests |
-| HMA package filtering | PARTIAL | Local PackageManager/ServiceManager proxies do not establish external Binder-client filtering |
-| HMA Settings interception | MISSING | Declared ownership does not install a SettingsProvider hook |
-| PIF property / Build implementation | IMPLEMENTED / DEVICE_UNVERIFIED | Real Android branches exist; host hook/JNI mocks do not measure device effects |
-| PIF provider / recovery | STUB | Provider consumer and populated recovery state not established |
+| HMA entrypoint | IMPLEMENTED / DEVICE_UNVERIFIED | `ZygoteEntry` prioritized and `EntryPoint` aligned with `init(String)`/`getHookState()`; RFC 8259 JSON parser, deferred `system_server` bootstrap and JVM bytecode contract tests added |
+| HMA package filtering | PARTIAL / DEVICE_UNVERIFIED | `PackageManagerHook` wraps `Computer` (`mLiveComputer`/`mComputer`) and `AppsFilterSnapshot` (`this$0`) with caller-aware scope/whitelist, `applyPresets`/`ignoredPackagesForPresets`, `extraOppositeAppList`, `ParceledListSlice`, and `getInstallSourceInfo`; concrete non-interface `AppsFilter`/`Computer` classes still need ART method hooks |
+| HMA Settings interception | PARTIAL / DEVICE_UNVERIFIED | `SettingsProviderHook` wraps in-process `IContentProvider` for `adb_enabled`, `development_settings_enabled`, `mock_location`, and `settingsTemplates`; Android device qualification pending |
+| PIF property / Build implementation | IMPLEMENTED / DEVICE_UNVERIFIED | Real Android branches exist (v18 `custom.pif.json` + `pif.prop` fallback/migration); host hook/JNI mocks do not measure device effects |
+| PIF provider / recovery | IMPLEMENTED / DEVICE_UNVERIFIED | Effective in-memory LKG recovery (`last_valid_props_` + snapshot + TEE `spoofProvider=0` enforcement) plus Java `CustomProvider`/`CustomKeyStoreSpi` DEX handoff (`spoofProvider=1`, TEE inactive); device verification pending |
 | TEE runtime | BLOCKED | Structural XML inspection does not supply Keystore2 interception, signing or a supervisor |
-| COPG implementation | PARTIAL / DEVICE_UNVERIFIED | Post-specialization companion calls, early PLT scan and assignment reporting remain gaps |
-| ACK transport | PARTIAL | Strict identity, peer checks and serialized publication exist; post-callback companion lifecycle and bounded framing still need Android qualification |
+| COPG implementation | IMPLEMENTED / DEVICE_UNVERIFIED | `PACKAGES_*_DEVICE` profiles, `cpu_only_packages`/`blacklist` unmount, actual JNI assignment reporting, `exemptFd` companion session and ShadowHook late-load `libc.so` coverage implemented |
+| ACK transport | IMPLEMENTED / DEVICE_UNVERIFIED | Pre-specialization `exemptFd` session retention, bounded newline/EOF stream framing, multi-command companion sessions, trusted `cpuinfo_spoof` validation and live UID/namespace checks implemented; Android loader qualification pending |
 | Runtime generation/snapshot linkage | IMPLEMENTED / DEVICE_UNVERIFIED | Actual consumer snapshot hash/generation/request metadata replaces constant generation; unbound legacy snapshots produce no current proof |
 | Observation/status | PARTIAL | Native status rejects stale boot/request/process evidence and requires successful initialization; one-shot reports still do not measure every hook effect |
 | Persistence | IMPLEMENTED recoverability | Durable native journal plus reader/writer lock; not atomic publication for arbitrary raw readers |

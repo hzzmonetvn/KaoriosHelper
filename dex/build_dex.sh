@@ -19,7 +19,7 @@ mkdir -p "${CLASSES_DIR}" "${DEX_DIR}"
 # Locate javac
 JAVAC_BIN="$(command -v javac || true)"
 if [ -z "${JAVAC_BIN}" ]; then
-  for cand in /home/hzzmonet/.gradle/jdks/*/bin/javac /usr/lib/jvm/*/bin/javac; do
+  for cand in /home/hzzmonet/.gradle/jdks/*/bin/javac /home/hzzmonet/.gradle/jdks/*/*/bin/javac /usr/lib/jvm/*/bin/javac; do
     if [ -x "${cand}" ]; then
       JAVAC_BIN="${cand}"
       break
@@ -31,6 +31,9 @@ if [ -z "${JAVAC_BIN}" ]; then
   echo "Error: javac not found. A full JDK is required to build HMA DEX." >&2
   exit 1
 fi
+
+export JAVA_HOME="$(cd "$(dirname "${JAVAC_BIN}")/.." && pwd)"
+export PATH="${JAVA_HOME}/bin:${PATH}"
 
 # Locate d8
 D8_BIN="$(command -v d8 || true)"
@@ -54,20 +57,19 @@ if [ -z "${D8_BIN}" ]; then
   exit 1
 fi
 
-echo "Compiling HMA DEX sources with javac..."
-find "${SRC_DIR}" -name "*.java" > "${OUT_DIR}/sources.txt"
-"${JAVAC_BIN}" -source 1.8 -target 1.8 -d "${CLASSES_DIR}" @"${OUT_DIR}/sources.txt"
+echo "Compiling HMA DEX sources with javac (${JAVAC_BIN})..."
+find "${SRC_DIR}" -name "*.java" | sort > "${OUT_DIR}/sources.txt"
+"${JAVAC_BIN}" --release 8 -d "${CLASSES_DIR}" @"${OUT_DIR}/sources.txt"
 
-echo "Converting bytecode to DEX with d8..."
-CLASS_FILES=$(find "${CLASSES_DIR}" -name "*.class")
+echo "Converting bytecode to DEX with d8 (${D8_BIN})..."
+CLASS_FILES=$(find "${CLASSES_DIR}" -name "*.class" | sort)
 "${D8_BIN}" --min-api 26 --output "${DEX_DIR}" ${CLASS_FILES}
 
 if [ -f "${DEX_DIR}/classes.dex" ]; then
   echo "Successfully built ${DEX_DIR}/classes.dex"
-  mkdir -p "${ROOT_DIR}/module" "${ROOT_DIR}/module/data"
+  mkdir -p "${ROOT_DIR}/module"
   cp "${DEX_DIR}/classes.dex" "${ROOT_DIR}/module/classes.dex"
-  cp "${DEX_DIR}/classes.dex" "${ROOT_DIR}/module/data/classes.dex"
-  echo "Bundled classes.dex into module/ and module/data/"
+  echo "Bundled classes.dex into module/classes.dex"
 else
   echo "Error: classes.dex was not generated!" >&2
   exit 1

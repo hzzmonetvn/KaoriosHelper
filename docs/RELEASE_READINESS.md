@@ -22,13 +22,13 @@ CI now separates diagnostic artifacts from release-accepted artifacts. `upstream
 | Kaorios configuration | PARTIAL | Scalar Global adapter/storage implemented; runtime backend absent |
 | Settings.Global sync | IMPLEMENTED SUBSET / DEVICE_UNVERIFIED | On-demand allowlisted read/merge; no watcher/write-back; unrepresentable policy fails before batch publication |
 | Snapshot / schema migration | PARTIAL | Exact-byte legacy migration, native metadata initialization and validated rollback implemented; not complete upstream schema-version migration |
-| HMA runtime | PARTIAL | DEX build path exists; entrypoint and real remote-client interception remain unresolved |
-| PIF runtime | DEVICE_UNVERIFIED | Native hook/JNI paths exist; host mocks are not actual Android measurements |
+| HMA runtime | PARTIAL / DEVICE_UNVERIFIED | `classes.dex` builds cleanly (`--release 8` + `d8`); `ZygoteEntry`/`EntryPoint` snapshot handoff, `SimpleJson`, deferred `system_server` bootstrap, `Computer` + `AppsFilterSnapshot` caller scope, `applyPresets`, `getInstallSourceInfo`, and `SettingsProviderHook` implemented and JVM-tested; non-interface ART hooks and device qualification pending |
+| PIF runtime | IMPLEMENTED / DEVICE_UNVERIFIED | Native ShadowHook/JNI paths, v18 `custom.pif.json`/`pif.prop` support, effective LKG recovery, and Java `CustomProvider`/`CustomKeyStoreSpi` DEX injection (`spoofProvider=1`, TEE inactive) implemented; hardware verification pending |
 | TEE runtime | BLOCKED | Keybox structure inspection only; backend dependency chain absent |
-| COPG runtime | PARTIAL | Lifecycle, namespace confinement and late-library coverage gaps |
-| Runtime generation/snapshot linkage | IMPLEMENTED / DEVICE_UNVERIFIED | Actual snapshot hash/generation, request, boot and live-process ACK identity; transport/lifecycle and full runtime coverage remain PARTIAL |
+| COPG runtime | IMPLEMENTED / DEVICE_UNVERIFIED | `PACKAGES_*_DEVICE`, `cpu_only_packages`/`blacklist`, actual JNI assignment reporting, ShadowHook late-load `libc.so` coverage and `exemptFd` companion session implemented; device qualification pending |
+| Runtime generation/snapshot linkage | IMPLEMENTED / DEVICE_UNVERIFIED | Actual snapshot hash/generation, request, boot, live-process ACK identity and bounded multi-command companion framing implemented; Android loader qualification pending |
 | Upstream identity | IMPLEMENTED | Verified Git objects; not proof of vendored integration or release-asset equivalence |
-| Dependency/license distribution closure | PARTIAL | Transitive pins, exact grants and packaged notices require separate closure |
+| Dependency/license distribution closure | PARTIAL | Root `NOTICE` + bundled `module/licenses/{AGPL-3.0,Apache-2.0,MIT,ISC-BSD}.txt` packaged in module ZIP; `upstreams.lock.json` transitive pins & legal sign-off (`upstreams.py acceptance`) remain open |
 | Android artifacts | BUILD VERIFIED / RELEASE BLOCKED | `bef592c` CI `43583721973` produced diagnostic artifact `14109666874`; release/license acceptance and hardware gates remain open |
 | Physical acceptance | DEVICE_UNVERIFIED | No hardware execution results |
 

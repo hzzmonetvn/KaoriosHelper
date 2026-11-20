@@ -1,15 +1,15 @@
 # Hook Ownership
 
-Evidence checkpoint: 2026-11-14, implementation `bef592c`. Ownership is a design constraint, not proof a hook exists or works on a device. Android build floor is API 31; broader historical API ranges are not qualified support.
+Evidence checkpoint: 2026-11-18 (working tree hardening post-`bef592c`). Ownership is a design constraint, not proof a hook exists or works on a device. Android build floor is API 31; broader historical API ranges are not qualified support.
 
 | Boundary | Intended owner | Current status | Scope / limitation |
 |---|---|---|---|
-| Package visibility / installer information | HMA | PARTIAL | system_server Java proxy scaffolding; remote-client service-boundary coverage unproven |
-| Developer/ADB Settings reads | HMA | MISSING | No installed SettingsProvider interception established |
-| GMS/Play Store property and Build paths | PIF | IMPLEMENTED / DEVICE_UNVERIFIED | Native process predicates are authoritative; do not infer exact scope from a simplified diagram |
-| Key attestation runtime | TEE | BLOCKED | Reserved ownership only; active Keystore2 backend absent |
-| Configured app Build/property paths | COPG | PARTIAL / DEVICE_UNVERIFIED | Native exclusion of GMS/Play Store limits overlap; late libraries and subprocess profile matching need validation |
-| Configured app CPU mount | COPG | PARTIAL / DEVICE_UNVERIFIED | Companion lifecycle and confinement checks remain unresolved |
+| Package visibility / installer information | HMA | PARTIAL / DEVICE_UNVERIFIED | `system_server` `Computer` (`mLiveComputer`) + `AppsFilterSnapshot` (`this$0`) + `IPackageManager` proxies with `templates`, `applyPresets`, `extraOppositeAppList`, and `getInstallSourceInfo`; concrete non-interface `AppsFilter`/`Computer` classes still need ART method hooks |
+| Developer/ADB Settings reads | HMA | PARTIAL / DEVICE_UNVERIFIED | `SettingsProviderHook.java` wraps in-process `IContentProvider` for `adb_enabled`, `development_settings_enabled`, `mock_location`, and `settingsTemplates` with `< 10000` UID exemptions; hardware verification pending |
+| GMS/Play Store property and Build paths | PIF | IMPLEMENTED / DEVICE_UNVERIFIED | Native ShadowHook + JNI Build + `pif.prop` fallback + Java `CustomProvider` (preloaded into RAM before `FORCE_DENYLIST_UNMOUNT` when `spoofProvider=1` and TEE inactive); native process predicates remain authoritative |
+| Key attestation runtime | TEE | BLOCKED | Reserved ownership only; `<AndroidAttestation>`/`Keybox` XML inspection implemented, active Keystore2 backend absent |
+| Configured app Build/property paths | COPG | IMPLEMENTED / DEVICE_UNVERIFIED | Native GMS/Play Store/system exclusion (including `:subprocess`), subprocess profile fallback, partition-qualified props, and late-load Bionic `libc.so` ShadowHook coverage implemented; hardware behavior unverified |
+| Configured app CPU mount | COPG | IMPLEMENTED / DEVICE_UNVERIFIED | Pre-specialize `exemptFd` companion session, `SO_PEERCRED`/live-UID/mount-namespace isolation checks, and trusted `cpuinfo_spoof` validation implemented; hardware confinement unverified |
 | Global boot properties / Settings writes | None | MISSING by requirement | Requirement 8 removes global mutations; compatibility is not an exception |
 | Settings.Global-to-module synchronization | Native `helperctl` adapters | IMPLEMENTED SUBSET / DEVICE_UNVERIFIED | On-demand allowlisted reads and validated merges; no Settings write-back or watcher |
 | Kaorios ROM/Zygisk runtime backend | None implemented | BLOCKED | Mapped scalar storage is not a runtime consumer or ROM bridge |

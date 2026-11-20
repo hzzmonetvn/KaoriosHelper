@@ -44,6 +44,11 @@ class TestPackageIntegration(unittest.TestCase):
                 "bin/armeabi-v7a/helperctl",
                 "META-INF/com/google/android/update-binary",
                 "META-INF/com/google/android/updater-script",
+                "NOTICE",
+                "licenses/AGPL-3.0.txt",
+                "licenses/Apache-2.0.txt",
+                "licenses/MIT.txt",
+                "licenses/ISC-BSD.txt",
             ]
             for entry in required_entries:
                 self.assertIn(entry, namelist, f"Missing required entry {entry} in official ZIP")

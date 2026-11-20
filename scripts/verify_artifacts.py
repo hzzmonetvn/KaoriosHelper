@@ -112,6 +112,11 @@ def verify_zip(zip_path: Path):
             "bin/armeabi-v7a/helperctl",
             "META-INF/com/google/android/update-binary",
             "META-INF/com/google/android/updater-script",
+            "NOTICE",
+            "licenses/AGPL-3.0.txt",
+            "licenses/Apache-2.0.txt",
+            "licenses/MIT.txt",
+            "licenses/ISC-BSD.txt",
         ]
         for req in required:
             if req not in namelist:

@@ -8,6 +8,26 @@ package com.v7878.zygisk;
 import org.frknkrc44.hma_oss.zygote.ZygoteEntry;
 
 public class EntryPoint {
+    public static void init(String configJson) {
+        ZygoteEntry.init(configJson);
+    }
+
+    public static int getHookState() {
+        return ZygoteEntry.getHookState();
+    }
+
+    public static String getHookStateName() {
+        return ZygoteEntry.getHookStateName();
+    }
+
+    public static long getFilterCount() {
+        return ZygoteEntry.getFilterCount();
+    }
+
+    public static boolean shouldHide(int callingUid, String targetPkg) {
+        return ZygoteEntry.shouldHide(callingUid, targetPkg);
+    }
+
     public static void main() {
         ZygoteEntry.main();
     }

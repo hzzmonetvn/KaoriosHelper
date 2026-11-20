@@ -1,0 +1,17 @@
+[package]
+name = "kaorios_zygisk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "kaorioshelper"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kaorios_common = { path = "../kaorios_common" }
+libc.workspace = true
+serde_json.workspace = true
+
+[build-dependencies]
+cc.workspace = true

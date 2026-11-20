@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kaorios_common",
+    "crates/kaorios_zygisk",
+    "crates/helperctl",
+    "crates/kaorios_fixture",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[workspace.dependencies]
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+cc = "1.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

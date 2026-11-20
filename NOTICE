@@ -1,0 +1,81 @@
+KaoriosHelper
+Copyright (C) 2026 HzzMonet / Kaorios Project
+
+Licensed under the GNU Affero General Public License v3.0 (AGPL-3.0-only).
+See LICENSE (or module/licenses/AGPL-3.0.txt) for the full license text.
+
+================================================================================
+UPSTREAM & THIRD-PARTY NOTICES AND ATTRIBUTIONS
+================================================================================
+
+This combined work includes code, architectural adaptations, and bundled
+libraries from the following open-source projects:
+
+1. HMA-OSS (Hide My Applist - Open Source)
+   Repository: https://github.com/frknkrc44/HMA-OSS.git
+   Pinned Reference: tag oss-173 (1fe86ce2b4a6f21197e6e92d15e054d609b7d77c)
+   License: AGPL-3.0-only
+   Original Copyright:
+     Copyright (C) 2021-2026 Furkan Karcıoğlu (frknkrc44) & HMA-OSS contributors
+     Copyright (C) 2020-2022 nullptr (Original HideMyApplist)
+   Modifications: Reimplemented and adapted for KaoriosHelper in-memory
+   system_server DEX payload (dex/src/org/frknkrc44/hma_oss/zygote/) and
+   native Zygisk companion lifecycle (engines/hma/).
+
+2. PlayIntegrityFork / PlayIntegrityFix
+   Repository: https://github.com/osm0sis/PlayIntegrityFork.git
+   Pinned Reference: tag v18 / 23ec56c2440c4fd1a5e893a23ef7861d6366a828
+   License: GPL-3.0-only (combined under AGPL-3.0-only Section 13)
+   Original Copyright:
+     Copyright (C) 2023-2026 osm0sis
+     Copyright (C) 2023-2024 chiteroman
+   Modifications: Adapted Bionic property/Build hooks, CustomProvider /
+   CustomKeyStoreSpi, and custom.pif.json/pif.prop support for KaoriosHelper
+   (engines/pif/, dex/src/es/chiteroman/playintegrityfix/).
+
+3. COPG (Custom Optimization & Profile Generator, v5.1.1 OSS snapshot)
+   Repository: https://github.com/AlirezaParsi/COPG.git
+   Pinned Reference: commit 07c6482eaf83bf93697e88648491abf9053121c6
+   License: Apache-2.0 (see licenses/Apache-2.0.txt)
+   Original Copyright:
+     Copyright (C) 2024-2026 AlirezaParsi (Aliza)
+   Modifications (Apache-2.0 Section 4(b)):
+     Modified and integrated into KaoriosHelper (engines/copg/,
+     include/companion_server.hpp) with unified Zygisk dispatcher routing,
+     GMS/Play Store hook ownership isolation, strict mount-namespace confinement
+     (MS_SLAVE), late-load libc ShadowHook coverage, and spoof.json / COPG.json
+     snapshot identity tracking.
+
+4. TEESimulator-RS / AlwaysStrong Architecture Reference
+   Repositories:
+     - https://github.com/Enginex0/TEESimulator-RS.git (v6.0.1-307 / 6d241e56)
+     - https://gitlab.com/Evokerr/AlwaysStrong.git (v1.0.5 / 95ccd2ad)
+   License: GPL-3.0-only (referencing TrickyStore & TrickyStoreOSS attributions)
+   Original Copyright:
+     Copyright (C) 2024-2026 Enginex0; Copyright (C) 2026 Evokerr;
+     TrickyStore / TrickyStoreOSS authors (beakthoven, JingMatrix, 5ec1cff)
+   Scope in KaoriosHelper: Structural keybox.xml inspection and PIF/TEE
+   mutual-exclusion rules only (engines/tee/); Keystore2 interception daemon is
+   not bundled in this package.
+
+5. Bundled Third-Party Components (third_party/)
+   - ByteDance ShadowHook (third_party/shadowhook/)
+     Copyright (c) 2021-2026 ByteDance Inc. (Kelun Cai, Pengying Xu)
+     License: MIT (see licenses/MIT.txt)
+   - HexHacking xDL (third_party/shadowhook/third_party/xdl/)
+     Copyright (c) 2020-2025 HexHacking Team
+     License: MIT (see licenses/MIT.txt)
+   - nlohmann/json v3.12.0 (third_party/json/nlohmann/json.hpp)
+     Copyright (c) 2013-2025 Niels Lohmann
+     License: MIT (see licenses/MIT.txt)
+   - Magisk Zygisk API v4 header (third_party/zygisk/zygisk.hpp)
+     Copyright (c) 2022-2023 John "topjohnwu" Wu
+     License: ISC (see licenses/ISC-BSD.txt)
+   - Android Open Source Project atexit.cpp (third_party/atexit/atexit.cpp)
+     Copyright (C) 2020 The Android Open Source Project
+     License: BSD-2-Clause (see licenses/ISC-BSD.txt)
+   - Linux Syscall Support (third_party/shadowhook/third_party/lss/) &
+     BSD sys/{queue,tree}.h headers (third_party/shadowhook/third_party/bsd/)
+     Copyright (c) 2005-2011 Google Inc.; Regents of Univ. of California;
+     Niels Provos
+     License: BSD-3-Clause (see licenses/ISC-BSD.txt)

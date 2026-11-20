@@ -1,0 +1,14 @@
+[package]
+name = "helperctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+test-faults = ["kaorios_common/test-faults"]
+
+[dependencies]
+kaorios_common = { path = "../kaorios_common", features = [] }
+libc.workspace = true
+serde_json.workspace = true

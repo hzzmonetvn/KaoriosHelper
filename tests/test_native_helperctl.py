@@ -1,8 +1,9 @@
-"""Host integration tests execute the actual C++ CLI, never a model of it."""
+"""Host integration tests execute the actual Rust CLI, never a model of it."""
 import concurrent.futures
 import json
 import os
 import hashlib
+import shutil
 import time
 from pathlib import Path
 import subprocess
@@ -15,13 +16,20 @@ ROOT = Path(__file__).resolve().parents[1]
 class NativeHelperCtlTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.build = tempfile.TemporaryDirectory()
-        cls.binary = Path(cls.build.name) / "helperctl"
-        subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-DKAORIOS_TEST_FAULTS", str(ROOT / "cli/helperctl/helperctl.cpp"), "-o", str(cls.binary)], check=True)
+        bin_path = ROOT / "target/debug/helperctl"
+        if not bin_path.is_file():
+            if shutil.which("cargo") is None:
+                raise unittest.SkipTest("cargo not installed locally; runs in CI")
+            subprocess.run(
+                ["cargo", "build", "-p", "helperctl", "--features", "test-faults"],
+                cwd=ROOT,
+                check=True,
+            )
+        cls.binary = bin_path
 
     @classmethod
     def tearDownClass(cls):
-        cls.build.cleanup()
+        pass
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -416,11 +424,59 @@ class NativeHelperCtlTest(unittest.TestCase):
         self.assertEqual(version['protocolVersion'], 1)
         self.assertEqual(version['statusSchemaVersion'], 1)
         self.assertTrue(version['capabilities']['configSet'])
-        for key in ('settingsGlobalSync', 'configMigration', 'recoverableConfigTransactions', 'runtimeAckV2'):
+        for key in ('settingsGlobalSync', 'configMigration', 'recoverableConfigTransactions',
+                    'runtimeAckV2', 'redactedConfigRead'):
             self.assertTrue(version['capabilities'][key])
-        for key in ('atomicMultiFileSnapshot', 'redactedConfigRead',
+        for key in ('atomicMultiFileSnapshot',
                     'structuredMutationErrors', 'deviceVerification', 'screenCapture'):
             self.assertFalse(version['capabilities'][key])
+
+    def test_redacted_config_read_strips_secrets_and_identifiers(self):
+        keybox = (
+            '<KeyboxContent>\n'
+            '  <DeviceId>dev-01</DeviceId>\n'
+            '  <Key algorithm="ecdsa">\n'
+            '    <PrivateKey format="pem">-----BEGIN EC PRIVATE KEY-----\n'
+            'SUPER_SECRET_EC_KEY_DATA\n'
+            '-----END EC PRIVATE KEY-----</PrivateKey>\n'
+            '    <Certificate format="pem">-----BEGIN CERTIFICATE-----\n'
+            'SUPER_SECRET_CERT_DATA\n'
+            '-----END CERTIFICATE-----</Certificate>\n'
+            '  </Key>\n'
+            '</KeyboxContent>\n'
+        )
+        self.assertEqual(self.setconfig(keybox, 'tee').returncode, 0)
+        for cmd in (('config', 'get', '--redacted', 'tee'),
+                    ('config', 'get', 'tee', '--redacted'),
+                    ('config', 'summary', 'tee')):
+            res = self.runctl(*cmd)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertNotIn('SUPER_SECRET_EC_KEY_DATA', res.stdout)
+            self.assertNotIn('SUPER_SECRET_CERT_DATA', res.stdout)
+            self.assertIn('<PrivateKey>[REDACTED]</PrivateKey>', res.stdout)
+            self.assertIn('<Certificate>[REDACTED]</Certificate>', res.stdout)
+            self.assertIn('<DeviceId>dev-01</DeviceId>', res.stdout)
+        raw_tee = self.runctl('config', 'get', 'tee')
+        self.assertEqual(raw_tee.returncode, 0)
+        self.assertEqual(raw_tee.stdout, keybox)
+
+        copg_cfg = json.dumps({
+            'profiles': {
+                'com.example.game': {
+                    'model': 'ROG Phone 8',
+                    'android_id': '0123456789abcdef',
+                    'serial': 'R58M999999',
+                }
+            }
+        })
+        self.assertEqual(self.setconfig(copg_cfg, 'copg').returncode, 0)
+        redacted_copg = self.runctl('config', 'get', '--redacted', 'copg')
+        self.assertEqual(redacted_copg.returncode, 0, redacted_copg.stderr)
+        parsed = json.loads(redacted_copg.stdout)
+        prof = parsed['profiles']['com.example.game']
+        self.assertEqual(prof['model'], 'ROG Phone 8')
+        self.assertEqual(prof['android_id'], '[REDACTED]')
+        self.assertEqual(prof['serial'], '[REDACTED]')
 
     def test_kaorios_and_settings_transport_missing(self):
         self.assertNotEqual(self.runctl('config', 'validate', 'unknown', self.source('{}')).returncode, 0)
@@ -563,6 +619,70 @@ class NativeHelperCtlTest(unittest.TestCase):
         self.assertEqual((self.data/'copg.stored_gen').read_text(), '1\n')
         self.assertEqual(self.runctl('config', 'migrate', 'all').returncode, 0)
         self.assertEqual((self.data/'copg.stored_gen').read_text(), '1\n')
+
+    def test_upstream_pif_v18_string_flags_and_android_attestation_xml_accepted(self):
+        pif_v18 = json.dumps({
+            '// Build Fields': 'PlayIntegrityFork v18',
+            'MANUFACTURER': 'Google',
+            'MODEL': 'Pixel 8 Pro',
+            'FINGERPRINT': 'google/husky_beta/husky:15/AP31/1234:user/release-keys',
+            'BRAND': 'google',
+            'PRODUCT': 'husky_beta',
+            'DEVICE': 'husky',
+            'VERSION.RELEASE': '15',
+            'VERSION.SECURITY_PATCH': '2025-02-05',
+            'VERSION.DEVICE_INITIAL_SDK_INT': '34',
+            'spoofBuild': '1',
+            'spoofProps': 'true',
+            'spoofProvider': '0',
+            'spoofSignature': 'false',
+        })
+        self.assertEqual(self.setconfig(pif_v18, 'pif').returncode, 0)
+        self.assertNotEqual(self.setconfig('{"spoofBuild":"maybe"}', 'pif').returncode, 0)
+
+        aosp_keybox = (
+            '<?xml version="1.0"?>\n'
+            '<AndroidAttestation>\n'
+            '  <NumberOfKeyboxes>1</NumberOfKeyboxes>\n'
+            '  <Keybox DeviceID="husky">\n'
+            '    <Key algorithm="ecdsa">\n'
+            '      <PrivateKey format="pem">KEY</PrivateKey>\n'
+            '      <Certificate format="pem">CERT</Certificate>\n'
+            '    </Key>\n'
+            '  </Keybox>\n'
+            '</AndroidAttestation>\n'
+        )
+        self.assertEqual(self.setconfig(aosp_keybox, 'tee').returncode, 0)
+        self.assertNotEqual(self.setconfig('<Keybox><PrivateKey>K</PrivateKey></Keybox>', 'tee').returncode, 0)
+
+    def test_migrate_legacy_pif_prop_preserves_prop_and_creates_canonical_json(self):
+        legacy_prop = (
+            '# PIF property format\n'
+            'MANUFACTURER=Google\n'
+            'MODEL=Pixel 8a\n'
+            'spoofProps=true\n'
+            'spoofProvider=0\n'
+        )
+        (self.data / 'pif.prop').write_text(legacy_prop)
+        st = self.runctl('status', '--json')
+        self.assertEqual(st.returncode, 0, st.stderr)
+        pif_status = json.loads(st.stdout)['engines']['pif']
+        self.assertEqual(pif_status['status'], 'NOT_CONFIGURED')
+        self.assertIn('explicit migration', pif_status['details'])
+
+        mig = self.runctl('config', 'migrate', 'pif')
+        self.assertEqual(mig.returncode, 0, mig.stderr)
+        self.assertEqual((self.data / 'pif.prop').read_text(), legacy_prop)
+        self.assertEqual((self.data / 'pif.stored_gen').read_text(), '1\n')
+        parsed = json.loads((self.data / 'pif.json').read_text())
+        self.assertEqual(parsed, {
+            'MANUFACTURER': 'Google',
+            'MODEL': 'Pixel 8a',
+            'spoofProps': 1,
+            'spoofProvider': 0,
+        })
+        self.assertEqual(self.runctl('config', 'migrate', 'pif').returncode, 0)
+        self.assertEqual((self.data / 'pif.stored_gen').read_text(), '1\n')
 
 
 if __name__ == '__main__':
