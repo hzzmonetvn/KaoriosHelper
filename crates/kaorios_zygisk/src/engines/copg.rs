@@ -21,8 +21,10 @@ use kaorios_common::runtime_snapshot::{
 use kaorios_common::{log_debug, log_error, log_info, log_warn, DEFAULT_DATA_DIR};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 use std::ffi::{CStr, CString};
 use std::fs;
+#[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};

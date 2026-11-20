@@ -4,7 +4,7 @@
 
 use crate::zygisk_abi::JNINativeMethod;
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_void};
 
 pub type jboolean = u8;
 pub type jbyte = i8;

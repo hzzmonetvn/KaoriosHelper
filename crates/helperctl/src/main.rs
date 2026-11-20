@@ -11,7 +11,7 @@ use kaorios_common::settings_adapter::{
     adapt_settings, parse_pif_settings, settings_keys, validate_keybox_xml_structure,
 };
 use kaorios_common::settings_command::capture_global_settings;
-use kaorios_common::{DEFAULT_DATA_DIR, DEFAULT_MOD_DIR};
+use kaorios_common::DEFAULT_MOD_DIR;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
