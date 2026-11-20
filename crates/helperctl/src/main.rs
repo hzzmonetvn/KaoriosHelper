@@ -24,8 +24,6 @@ use std::process::ExitCode;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EngineStatus {
-    #[serde(skip_serializing)]
-    name: String,
     installed: bool,
     enabled: bool,
     config_valid: bool,
@@ -48,9 +46,8 @@ struct EngineStatus {
 }
 
 impl EngineStatus {
-    fn new(name: &str) -> Self {
+    fn new(_name: &str) -> Self {
         Self {
-            name: name.to_string(),
             installed: true,
             enabled: false,
             config_valid: false,
