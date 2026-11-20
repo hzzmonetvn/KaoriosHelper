@@ -31,8 +31,20 @@ use std::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 static COPG_ACTIVE_INSTANCE: AtomicPtr<CopgEngine> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg_attr(
+    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 static ORIG_PLT_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg_attr(
+    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 static ORIG_LIBC_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg_attr(
+    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 static ORIG_LIBC_READ_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]

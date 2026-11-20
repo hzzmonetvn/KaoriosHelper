@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 HzzMonet / Kaorios Project
-#![allow(clippy::duplicate_mod)]
+#![allow(
+    clippy::duplicate_mod,
+    clippy::missing_safety_doc,
+    clippy::not_unsafe_ptr_arg_deref
+)]
 
 pub mod dispatcher;
 pub mod engine;

@@ -45,7 +45,15 @@ struct PropertyCallbackContext {
     original_cookie: *mut c_void,
 }
 
+#[cfg_attr(
+    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 static ORIG_PROP_READ_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+#[cfg_attr(
+    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    allow(dead_code)
+)]
 static ORIG_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
 #[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]

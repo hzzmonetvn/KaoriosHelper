@@ -99,7 +99,7 @@ impl TeeEngine {
                 let is_self_closing = tag_body.ends_with('/');
                 if is_closing {
                     let closing_name = tag_body[1..]
-                        .split(|c: char| matches!(c, ' ' | '\t' | '\r' | '\n'))
+                        .split([' ', '\t', '\r', '\n'])
                         .next()
                         .unwrap_or("")
                         .to_string();
