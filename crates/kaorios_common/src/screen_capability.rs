@@ -18,8 +18,10 @@ mod tests {
 
     #[test]
     fn screen_capability_remains_blocked() {
-        assert!(!ScreenCaptureCapability::DEFAULT_ENABLED);
-        assert!(!ScreenCaptureCapability::SUPPORTED);
+        const {
+            assert!(!ScreenCaptureCapability::DEFAULT_ENABLED);
+            assert!(!ScreenCaptureCapability::SUPPORTED);
+        }
         assert_eq!(ScreenCaptureCapability::BACKEND, "unsupported");
         assert_eq!(ScreenCaptureCapability::STATUS, "BLOCKED");
         assert_eq!(

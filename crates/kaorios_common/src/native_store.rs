@@ -60,15 +60,12 @@ impl NativeStore {
                 0o600,
             )
         };
-        let lock_ok = if lock_fd < 0 {
-            false
-        } else if unsafe { libc::fstat(lock_fd, &mut st) } != 0
-            || (st.st_mode & libc::S_IFMT) != libc::S_IFREG
-            || !trusted(&st)
-            || st.st_nlink != 1
+        let lock_ok = if lock_fd >= 0
+            && unsafe { libc::fstat(lock_fd, &mut st) } == 0
+            && (st.st_mode & libc::S_IFMT) == libc::S_IFREG
+            && trusted(&st)
+            && st.st_nlink == 1
         {
-            false
-        } else {
             loop {
                 let rc = unsafe { libc::flock(lock_fd, libc::LOCK_EX) };
                 if rc == 0 {
@@ -79,6 +76,8 @@ impl NativeStore {
                     break false;
                 }
             }
+        } else {
+            false
         };
 
         if !lock_ok {
@@ -357,21 +356,20 @@ impl NativeStore {
     }
 
     fn apply(&self, changes: &Changes) -> Result<(), String> {
-        #[allow(unused_variables)]
-        let mut applied = 0usize;
-        for (name, value) in changes {
+        for (applied, (name, value)) in changes.iter().enumerate() {
             #[cfg(feature = "test-faults")]
             if let Ok(fault) = std::env::var("KAORIOS_TEST_TX_STOP_AFTER") {
                 if applied.to_string() == fault {
                     unsafe { libc::_exit(86) };
                 }
             }
+            #[cfg(not(feature = "test-faults"))]
+            let _ = applied;
             if let Some(v) = value {
                 self.write(name, v)?;
             } else {
                 self.remove(name)?;
             }
-            applied += 1;
         }
         self.remove(JOURNAL_NAME)
     }

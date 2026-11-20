@@ -513,11 +513,7 @@ pub fn validate_keybox_xml_structure(raw: &str) -> bool {
         return false;
     };
     let cert_end_idx = key_idx + cert_end_rel;
-    if cert_end_idx <= cert_idx || cert_end_idx > end_idx {
-        return false;
-    }
-
-    true
+    !(cert_end_idx <= cert_idx || cert_end_idx > end_idx)
 }
 
 pub fn adapt_settings(
