@@ -71,6 +71,7 @@ fn native_store_transaction_and_journal() {
 
     assert_eq!(store.read("pif.json", false).unwrap(), "{\"MODEL\":\"Pixel 8\"}\n");
     assert_eq!(store.read("pif.stored_gen", false).unwrap(), "1\n");
+    drop(store);
 
     let snap = read_runtime_config_snapshot(&dir_str, "pif", "pif.json").unwrap();
     assert!(!snap.config_hash.is_empty());

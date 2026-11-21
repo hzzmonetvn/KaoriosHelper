@@ -11,6 +11,7 @@ jobs:
   test-host:
     name: Host Tests (Rust Workspace & Python)
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
     name: Android Multi-ABI Rust Cross-Compilation & Packaging
     needs: test-host
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
