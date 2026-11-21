@@ -748,7 +748,7 @@ pub fn read_runtime_ack_at(dir_fd: libc::c_int, engine: &str) -> Option<RuntimeA
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let euid = unsafe { libc::geteuid() };
     if unsafe { libc::fstat(fd, &mut st) } != 0
-        || !crate::is_regular_file(u32::from(st.st_mode))
+        || !crate::is_regular_file(st.st_mode)
         || st.st_uid != euid
         || (st.st_mode & 0o022) != 0
         || st.st_size <= 0

@@ -16,6 +16,7 @@ pub const DEFAULT_MOD_DIR: &str = "/data/adb/modules/kaorioshelper";
 pub const DEFAULT_DATA_DIR: &str = "/data/adb/modules/kaorioshelper/data";
 
 #[inline]
+#[allow(clippy::unnecessary_cast)]
 pub fn is_regular_file(mode: u32) -> bool {
-    (mode & u32::from(libc::S_IFMT)) == u32::from(libc::S_IFREG)
+    (mode & (libc::S_IFMT as u32)) == (libc::S_IFREG as u32)
 }

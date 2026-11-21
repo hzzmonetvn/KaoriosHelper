@@ -591,7 +591,7 @@ impl PifEngine {
             }
             let mut st: libc::stat = std::mem::zeroed();
             if libc::fstat(fd, &mut st) == 0
-                && kaorios_common::is_regular_file(u32::from(st.st_mode))
+                && kaorios_common::is_regular_file(st.st_mode)
                 && st.st_size > 0
                 && (st.st_size as u64) <= 16 * 1024 * 1024
             {
