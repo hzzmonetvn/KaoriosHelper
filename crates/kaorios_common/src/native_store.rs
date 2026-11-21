@@ -62,7 +62,7 @@ impl NativeStore {
         };
         let lock_ok = if lock_fd >= 0
             && unsafe { libc::fstat(lock_fd, &mut st) } == 0
-            && ((st.st_mode as u32) & (libc::S_IFMT as u32)) == (libc::S_IFREG as u32)
+            && crate::is_regular_file(u32::from(st.st_mode))
             && trusted(&st)
             && st.st_nlink == 1
         {
@@ -111,7 +111,7 @@ impl NativeStore {
             }
             return Err("Target inspection failed".to_string());
         }
-        if ((st.st_mode as u32) & (libc::S_IFMT as u32)) != (libc::S_IFREG as u32) || !trusted(&st) || st.st_nlink != 1 {
+        if !crate::is_regular_file(u32::from(st.st_mode)) || !trusted(&st) || st.st_nlink != 1 {
             return Err("Untrusted configuration file".to_string());
         }
         Ok(())
@@ -159,7 +159,7 @@ impl NativeStore {
         }
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd, &mut st) } != 0
-            || ((st.st_mode as u32) & (libc::S_IFMT as u32)) != (libc::S_IFREG as u32)
+            || !crate::is_regular_file(u32::from(st.st_mode))
             || !trusted(&st)
             || st.st_nlink != 1
             || st.st_size < 0
