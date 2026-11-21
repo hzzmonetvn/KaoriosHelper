@@ -29,7 +29,7 @@ pub fn is_trusted_cpu_spoof_source(path: &str) -> bool {
         return false;
     }
     let euid = unsafe { libc::geteuid() };
-    if (lst.st_mode & libc::S_IFMT) != libc::S_IFREG || lst.st_nlink != 1 {
+    if ((lst.st_mode as u32) & (libc::S_IFMT as u32)) != (libc::S_IFREG as u32) || lst.st_nlink != 1 {
         return false;
     }
     if lst.st_uid != euid || (lst.st_mode & 0o022) != 0 {

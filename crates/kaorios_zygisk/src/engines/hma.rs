@@ -475,7 +475,7 @@ impl HmaEngine {
 
         let mut st: libc::stat = std::mem::zeroed();
         if libc::fstat(fd, &mut st) < 0
-            || (st.st_mode & libc::S_IFMT) != libc::S_IFREG
+            || ((st.st_mode as u32) & (libc::S_IFMT as u32)) != (libc::S_IFREG as u32)
             || st.st_size <= 0
         {
             libc::close(fd);

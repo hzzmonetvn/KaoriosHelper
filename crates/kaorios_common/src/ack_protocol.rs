@@ -748,7 +748,7 @@ pub fn read_runtime_ack_at(dir_fd: libc::c_int, engine: &str) -> Option<RuntimeA
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let euid = unsafe { libc::geteuid() };
     if unsafe { libc::fstat(fd, &mut st) } != 0
-        || (st.st_mode & libc::S_IFMT) != libc::S_IFREG
+        || ((st.st_mode as u32) & (libc::S_IFMT as u32)) != (libc::S_IFREG as u32)
         || st.st_uid != euid
         || (st.st_mode & 0o022) != 0
         || st.st_size <= 0
