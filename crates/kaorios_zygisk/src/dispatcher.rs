@@ -95,9 +95,7 @@ impl KaoriosDispatcher {
                 continue;
             }
             let ok = catch_unwind(AssertUnwindSafe(|| {
-                if self.engines[i].is_enabled() {
-                    self.engines[i].on_load(api, env);
-                }
+                self.engines[i].on_load(api, env);
             }))
             .is_ok();
             if !ok {
@@ -122,8 +120,7 @@ impl KaoriosDispatcher {
                 continue;
             }
             let res = catch_unwind(AssertUnwindSafe(|| {
-                self.engines[i].is_enabled()
-                    && self.engines[i].should_handle_app(&process_name, uid)
+                self.engines[i].should_handle_app(&process_name, uid)
             }));
             match res {
                 Ok(true) => self.active_app_indices.push(i),
@@ -182,7 +179,7 @@ impl KaoriosDispatcher {
                 continue;
             }
             let res = catch_unwind(AssertUnwindSafe(|| {
-                if self.engines[i].is_enabled() && self.engines[i].should_handle_server() {
+                if self.engines[i].should_handle_server() {
                     self.engines[i].pre_server_specialize(args);
                     true
                 } else {

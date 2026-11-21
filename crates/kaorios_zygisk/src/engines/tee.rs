@@ -4,6 +4,7 @@
 use crate::engine::Engine;
 use crate::jni_sys::{jint, JNIEnv};
 use crate::zygisk_abi::{AppSpecializeArgs, ZygiskApi};
+use kaorios_common::companion_ipc::{CompanionConnector, CompanionSession};
 use kaorios_common::{log_debug, log_info, log_warn, DEFAULT_DATA_DIR};
 use std::fs;
 use std::path::Path;
@@ -22,6 +23,7 @@ pub struct TeeEngine {
     data_dir: String,
     api: Option<ZygiskApi>,
     env: *mut JNIEnv,
+    prefetched_keybox: Option<String>,
     keybox_mutex: Mutex<()>,
 }
 
@@ -39,24 +41,40 @@ impl TeeEngine {
             data_dir,
             api: None,
             env: std::ptr::null_mut(),
+            prefetched_keybox: None,
             keybox_mutex: Mutex::new(()),
         }
     }
 
     pub fn parse_keybox(&self) -> KeyboxInfo {
         let _guard = self.keybox_mutex.lock().unwrap_or_else(|e| e.into_inner());
-        let mut info = KeyboxInfo::default();
+        if let Some(ref xml) = self.prefetched_keybox {
+            return Self::parse_keybox_content(xml);
+        }
+        if self.api.is_some() {
+            return KeyboxInfo::default();
+        }
         let keybox_path = format!("{}/keybox.xml", self.data_dir);
         let Ok(meta) = fs::metadata(&keybox_path) else {
-            return info;
+            return KeyboxInfo::default();
         };
         if meta.len() == 0 {
-            return info;
+            return KeyboxInfo::default();
         }
         let Ok(mut bytes) = fs::read(&keybox_path) else {
-            return info;
+            return KeyboxInfo::default();
         };
         let content = String::from_utf8_lossy(&bytes).into_owned();
+        let info = Self::parse_keybox_content(&content);
+        bytes.fill(0);
+        info
+    }
+
+    pub fn parse_keybox_content(content: &str) -> KeyboxInfo {
+        let mut info = KeyboxInfo::default();
+        if content.trim().is_empty() {
+            return info;
+        }
 
         let mut tag_stack: Vec<String> = Vec::new();
         let mut has_keybox_root = false;
@@ -188,7 +206,6 @@ impl TeeEngine {
             info.valid = true;
         }
 
-        bytes.fill(0);
         info
     }
 
@@ -217,13 +234,26 @@ impl Engine for TeeEngine {
     }
 
     fn should_handle_app(&mut self, process_name: &str, _uid: jint) -> bool {
-        if !self.is_enabled() {
-            return false;
-        }
-        matches!(
+        if !matches!(
             process_name,
             "com.google.android.gms.unstable" | "com.google.android.gms"
-        )
+        ) {
+            return false;
+        }
+        if let Some(ref api) = self.api {
+            let mut cs = CompanionSession::new();
+            let Some(state) = cs.fetch_engine_state(Some(api as &dyn CompanionConnector), "tee")
+            else {
+                return false;
+            };
+            if !state.enabled {
+                self.prefetched_keybox = None;
+                return false;
+            }
+            self.prefetched_keybox = Some(state.snapshot.bytes);
+            return true;
+        }
+        self.is_enabled()
     }
 
     fn pre_app_specialize(&mut self, _args: *mut AppSpecializeArgs, process_name: &str) {

@@ -2,9 +2,11 @@
 // Copyright (C) 2026 HzzMonet / Kaorios Project
 
 use kaorios_common::ack_protocol::{
-    bind_runtime_ack_to_current_process, parse_runtime_ack, validate_runtime_ack, AckEventType,
-    RuntimeAck,
+    bind_runtime_ack_to_current_process, is_pre_argv0_zygote_cmdline, parse_runtime_ack,
+    runtime_ack_boot_id, runtime_ack_now_millis, validate_runtime_ack, AckEventType, RuntimeAck,
 };
+use kaorios_common::companion_ipc::{CompanionConnector, CompanionSession};
+use kaorios_common::companion_server::handle_companion_session_with_dir;
 use kaorios_common::native_store::{validate_native_json, Changes, NativeStore};
 use kaorios_common::runtime_snapshot::read_runtime_config_snapshot;
 use kaorios_common::settings_adapter::{adapt_settings, settings_keys};
@@ -12,6 +14,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn temp_dir(prefix: &str) -> PathBuf {
@@ -108,4 +111,91 @@ fn settings_adapter_maps_pif_copg_and_hma() {
         ..Default::default()
     };
     let _ = bind_runtime_ack_to_current_process(&mut dummy_ack, 1, b"{}", "0123456789abcdef0123456789abcdef");
+}
+
+struct TestPairConnector(libc::c_int);
+
+impl CompanionConnector for TestPairConnector {
+    fn connect_companion(&self) -> libc::c_int {
+        self.0
+    }
+
+    fn exempt_fd(&self, fd: libc::c_int) -> bool {
+        fd >= 0
+    }
+}
+
+#[test]
+fn ack_pre_argv0_zygote_cmdline_helper() {
+    assert!(is_pre_argv0_zygote_cmdline("zygote64"));
+    assert!(is_pre_argv0_zygote_cmdline("zygote"));
+    assert!(is_pre_argv0_zygote_cmdline("usap64"));
+    assert!(is_pre_argv0_zygote_cmdline("<pre-initialized>"));
+    assert!(is_pre_argv0_zygote_cmdline("/system/bin/app_process64"));
+    assert!(!is_pre_argv0_zygote_cmdline("com.example.game"));
+    assert!(!is_pre_argv0_zygote_cmdline("system_server"));
+}
+
+#[test]
+fn companion_fetch_state_and_keepalive_over_socketpair() {
+    let dir = temp_dir("kaorios_companion_fetch");
+    let dir_str = dir.to_string_lossy().into_owned();
+    let boot = runtime_ack_boot_id();
+    let req_id = "0123456789abcdef0123456789abcdef";
+    let not_before = runtime_ack_now_millis().saturating_sub(5).max(1);
+
+    let store = NativeStore::open(&dir_str).unwrap();
+    let mut changes = Changes::new();
+    changes.insert("hma.json".to_string(), Some("{\"scope\":{}}\n".to_string()));
+    changes.insert("hma.stored_gen".to_string(), Some("1\n".to_string()));
+    changes.insert("hma.requested_gen".to_string(), Some("1\n".to_string()));
+    changes.insert(
+        "hma.request.json".to_string(),
+        Some(format!(
+            "{{\"requestId\":\"{req_id}\",\"bootId\":\"{boot}\",\"notBeforeMillis\":{not_before}}}"
+        )),
+    );
+    changes.insert("pif.json".to_string(), Some("{\"MODEL\":\"Pixel 9\"}\n".to_string()));
+    changes.insert("tee.enabled".to_string(), Some(String::new()));
+    changes.insert("keybox.xml".to_string(), Some("<Keybox/>".to_string()));
+    store.transaction(&changes).unwrap();
+    drop(store);
+
+    let mut fds = [-1 as libc::c_int; 2];
+    assert_eq!(
+        unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) },
+        0
+    );
+    let client_fd = fds[0];
+    let server_fd = fds[1];
+    let server_dir = dir_str.clone();
+    let server_thread = thread::spawn(move || {
+        handle_companion_session_with_dir(server_fd, &server_dir, 200);
+    });
+
+    let conn = TestPairConnector(client_fd);
+    let mut session = CompanionSession::new();
+    session.pre_specialize(Some(&conn));
+    assert!(session.has_retained_socket());
+
+    let copg_state = session.fetch_engine_state(None, "copg").unwrap();
+    assert!(!copg_state.enabled);
+
+    let pif_state = session.fetch_engine_state(None, "pif").unwrap();
+    assert!(pif_state.enabled);
+    assert_eq!(pif_state.snapshot.bytes, "{\"MODEL\":\"Pixel 9\"}\n");
+    assert_eq!(pif_state.boot_id, boot);
+
+    let tee_state = session.fetch_engine_state(None, "tee").unwrap();
+    assert!(tee_state.enabled);
+    assert_eq!(tee_state.snapshot.bytes, "<Keybox/>");
+
+    let hma_state = session.fetch_engine_state(None, "hma").unwrap();
+    assert!(hma_state.enabled);
+    assert_eq!(hma_state.snapshot.generation, 1);
+    assert_eq!(hma_state.snapshot.request_id, req_id);
+
+    session.close_session();
+    server_thread.join().unwrap();
+    let _ = fs::remove_dir_all(&dir);
 }

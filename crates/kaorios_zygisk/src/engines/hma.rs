@@ -184,6 +184,10 @@ impl HmaEngine {
             log_warn!("HMA: Configuration snapshot unavailable");
             return false;
         };
+        self.load_config_from_snapshot(snapshot)
+    }
+
+    pub fn load_config_from_snapshot(&self, snapshot: RuntimeConfigSnapshot) -> bool {
         if snapshot.bytes.is_empty() {
             return false;
         }
@@ -385,7 +389,7 @@ impl HmaEngine {
                 return true;
             }
         }
-        self.load_config()
+        self.load_config_from_snapshot(snapshot)
     }
 
     pub fn should_hide(&self, calling_uid: i32, calling_pkgs: &[&str], target_pkg: &str) -> bool {
@@ -693,6 +697,12 @@ impl HmaEngine {
             .clone();
         let failed = state == 4 && detail.contains("Timed out");
         self.publish_hook_state_ack(&snap, state, detail, failed);
+        if failed || state >= 8 {
+            self.companion_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .close_session();
+        }
     }
 }
 
@@ -706,6 +716,26 @@ impl Engine for HmaEngine {
     }
 
     fn should_handle_server(&mut self) -> bool {
+        if let Some(api) = self.api {
+            let api_ref: &dyn CompanionConnector = &api;
+            let mut cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+            if !cs.has_retained_socket() {
+                cs.pre_specialize(Some(api_ref));
+            }
+            let Some(state) = cs.fetch_engine_state(Some(api_ref), "hma") else {
+                cs.close_session();
+                return false;
+            };
+            if !state.enabled {
+                cs.close_session();
+                return false;
+            }
+            drop(cs);
+            if !state.snapshot.bytes.is_empty() {
+                let _ = self.load_config_from_snapshot(state.snapshot);
+            }
+            return true;
+        }
         self.is_enabled()
     }
 
@@ -717,16 +747,32 @@ impl Engine for HmaEngine {
 
     fn pre_server_specialize(&mut self, _args: *mut ServerSpecializeArgs) {
         log_debug!("HMA preServerSpecialize");
-        let loaded = self.load_config();
-        let _ = loaded;
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
-        self.companion_session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pre_specialize(api_ref);
+        if self.api.is_none() {
+            let _ = self.load_config();
+        } else {
+            let need_fetch = {
+                let cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+                let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                !cs.has_retained_socket() || !st.config_loaded
+            };
+            if need_fetch {
+                if let Some(api) = self.api {
+                    let api_ref: &dyn CompanionConnector = &api;
+                    let fetched = {
+                        let mut cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+                        if !cs.has_retained_socket() {
+                            cs.pre_specialize(Some(api_ref));
+                        }
+                        cs.fetch_engine_state(Some(api_ref), "hma")
+                    };
+                    if let Some(state) = fetched {
+                        if state.enabled && !state.snapshot.bytes.is_empty() {
+                            let _ = self.load_config_from_snapshot(state.snapshot);
+                        }
+                    }
+                }
+            }
+        }
 
         if let Some(api) = self.api {
             let mod_dir = api.get_module_dir();
@@ -746,7 +792,7 @@ impl Engine for HmaEngine {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .config_loaded;
-        if !already_loaded {
+        if !already_loaded && self.api.is_none() {
             self.load_config();
         }
         let snapshot = {
@@ -756,6 +802,7 @@ impl Engine for HmaEngine {
         };
         ACTIVE_HMA_ENGINE.store(self as *mut Self, Ordering::Release);
 
+        let mut close_companion = false;
         if !self.dex_entrypoint.is_null() && !self.env.is_null() {
             unsafe {
                 let env = self.env;
@@ -800,6 +847,7 @@ impl Engine for HmaEngine {
                         "HMA entrypoint threw unhandled Java exception",
                         true,
                     );
+                    close_companion = true;
                 } else if init_invoked && snapshot_supplied {
                     let mut hook_state = 3;
                     let get_state_mid =
@@ -818,15 +866,22 @@ impl Engine for HmaEngine {
                         &format!("HMA framework hooks stage: {hook_state}"),
                         false,
                     );
+                    if hook_state >= 8 {
+                        close_companion = true;
+                    }
                 }
             }
+        } else {
+            close_companion = true;
         }
 
         log_info!("HMA: In-process PackageManagerService and SettingsProvider protection initialized");
-        self.companion_session
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .close_session();
+        if close_companion {
+            self.companion_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .close_session();
+        }
         self.api = None;
     }
 }

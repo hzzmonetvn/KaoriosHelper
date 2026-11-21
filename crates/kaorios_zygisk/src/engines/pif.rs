@@ -169,6 +169,8 @@ pub struct PifEngine {
     last_valid_spoof_props: i32,
     spoof_build: i32,
     last_valid_spoof_build: i32,
+    cached_tee_active: Option<bool>,
+    prefetched_snapshot: Option<RuntimeConfigSnapshot>,
     config_snapshot: RuntimeConfigSnapshot,
     last_valid_snapshot: RuntimeConfigSnapshot,
 }
@@ -202,12 +204,20 @@ impl PifEngine {
             last_valid_spoof_props: 1,
             spoof_build: 1,
             last_valid_spoof_build: 1,
+            cached_tee_active: None,
+            prefetched_snapshot: None,
             config_snapshot: RuntimeConfigSnapshot::default(),
             last_valid_snapshot: RuntimeConfigSnapshot::default(),
         }
     }
 
     pub fn is_tee_active(&self) -> bool {
+        if let Some(active) = self.cached_tee_active {
+            return active;
+        }
+        if self.api.is_some() {
+            return false;
+        }
         Path::new(&format!("{}/tee.runtime_active", self.data_dir)).exists()
     }
 
@@ -280,15 +290,41 @@ impl PifEngine {
         props: &mut BTreeMap<String, String>,
         spoof_provider: &mut i32,
     ) -> bool {
+        let snapshot = if let Some(prefetched) = self.prefetched_snapshot.take() {
+            prefetched
+        } else if self.api.is_some() {
+            *spoof_provider = 0;
+            self.spoof_props = 1;
+            self.spoof_build = 1;
+            self.device_initial_sdk_int = 0;
+            log_warn!("PIF: Configuration snapshot unavailable");
+            return self.restore_last_known_good(props, spoof_provider);
+        } else {
+            let Ok(snapshot) = read_runtime_config_snapshot(&self.data_dir, "pif", "pif.json")
+            else {
+                *spoof_provider = 0;
+                self.spoof_props = 1;
+                self.spoof_build = 1;
+                self.device_initial_sdk_int = 0;
+                log_warn!("PIF: Configuration snapshot unavailable");
+                return self.restore_last_known_good(props, spoof_provider);
+            };
+            snapshot
+        };
+        self.load_config_from_snapshot(snapshot, props, spoof_provider)
+    }
+
+    pub fn load_config_from_snapshot(
+        &mut self,
+        snapshot: RuntimeConfigSnapshot,
+        props: &mut BTreeMap<String, String>,
+        spoof_provider: &mut i32,
+    ) -> bool {
         *spoof_provider = 0;
         self.spoof_props = 1;
         self.spoof_build = 1;
         self.device_initial_sdk_int = 0;
 
-        let Ok(snapshot) = read_runtime_config_snapshot(&self.data_dir, "pif", "pif.json") else {
-            log_warn!("PIF: Configuration snapshot unavailable");
-            return self.restore_last_known_good(props, spoof_provider);
-        };
         if snapshot.bytes.is_empty() {
             props.clear();
             return false;
@@ -735,13 +771,33 @@ impl Engine for PifEngine {
     }
 
     fn should_handle_app(&mut self, process_name: &str, _uid: jint) -> bool {
-        if !self.is_enabled() {
-            return false;
-        }
-        matches!(
+        if !matches!(
             process_name,
             "com.google.android.gms" | "com.google.android.gms.unstable" | "com.android.vending"
-        )
+        ) {
+            return false;
+        }
+        if let Some(api) = self.api {
+            let api_ref: &dyn CompanionConnector = &api;
+            if !self.companion_session.has_retained_socket() {
+                self.companion_session.pre_specialize(Some(api_ref));
+            }
+            let Some(state) = self.companion_session.fetch_engine_state(Some(api_ref), "pif")
+            else {
+                self.companion_session.close_session();
+                return false;
+            };
+            if !state.enabled {
+                self.cached_tee_active = Some(state.tee_runtime_active);
+                self.prefetched_snapshot = None;
+                self.companion_session.close_session();
+                return false;
+            }
+            self.cached_tee_active = Some(state.tee_runtime_active);
+            self.prefetched_snapshot = Some(state.snapshot);
+            return true;
+        }
+        self.is_enabled()
     }
 
     fn on_load(&mut self, api: Option<ZygiskApi>, env: *mut JNIEnv) {
@@ -768,7 +824,9 @@ impl Engine for PifEngine {
             .api
             .as_ref()
             .map(|a| a as &dyn CompanionConnector);
-        self.companion_session.pre_specialize(api_ref);
+        if !self.companion_session.has_retained_socket() {
+            self.companion_session.pre_specialize(api_ref);
+        }
 
         if let Some(api) = self.api {
             api.set_option(ZygiskOption::ForceDenylistUnmount);
@@ -776,7 +834,7 @@ impl Engine for PifEngine {
     }
 
     fn post_app_specialize(&mut self, _args: *const AppSpecializeArgs, process_name: &str) {
-        if !self.config_loaded {
+        if !self.config_loaded && self.api.is_none() {
             let mut props = std::mem::take(&mut self.cached_props);
             let mut sp = self.cached_spoof_provider;
             self.config_loaded = self.load_config(&mut props, &mut sp);

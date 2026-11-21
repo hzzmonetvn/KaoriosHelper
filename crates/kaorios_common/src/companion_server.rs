@@ -2,13 +2,21 @@
 // Copyright (C) 2026 HzzMonet / Kaorios Project
 
 use crate::ack_protocol::{
-    parse_runtime_ack, runtime_ack_has_live_identity, runtime_ack_read_process_identity,
-    validate_runtime_ack,
+    parse_runtime_ack, runtime_ack_boot_id, runtime_ack_has_live_identity_with_bootstrap,
+    runtime_ack_read_process_identity, validate_runtime_ack,
 };
-use crate::companion_ipc::{read_next_companion_command, write_companion_bytes};
-use crate::runtime_snapshot::write_runtime_ack_for_current_config;
+use crate::companion_ipc::{
+    read_next_companion_command_status, write_companion_bytes, CompanionEngineState,
+    CompanionReadStatus, MAX_COMPANION_PAYLOAD_BYTES,
+};
+use crate::native_store::NativeStore;
+use crate::runtime_snapshot::{
+    read_runtime_config_snapshot, write_runtime_ack_for_current_config_with_bootstrap,
+    RuntimeConfigSnapshot,
+};
 use crate::{log_debug, log_error, log_info, log_warn, DEFAULT_DATA_DIR};
 use std::ffi::CString;
+use std::path::Path;
 
 pub fn is_trusted_cpu_spoof_source(path: &str) -> bool {
     if path.is_empty() || path.contains('\0') {
@@ -218,9 +226,99 @@ pub fn handle_companion_session_with_dir(
     };
 
     let mut read_buffer = Vec::new();
-    let mut command = String::new();
-    while read_next_companion_command(client_socket, &mut read_buffer, &mut command, idle_timeout_ms)
-    {
+    let mut keepalive_server = false;
+    loop {
+        let command =
+            match read_next_companion_command_status(client_socket, &mut read_buffer, idle_timeout_ms)
+            {
+                CompanionReadStatus::Command(cmd) => cmd,
+                CompanionReadStatus::Timeout => {
+                    if keepalive_server
+                        && peer_pid > 1
+                        && unsafe { libc::kill(peer_pid, 0) } == 0
+                    {
+                        continue;
+                    }
+                    break;
+                }
+                CompanionReadStatus::Closed => break,
+            };
+
+        if let Some(engine) = command.strip_prefix("fetch_state:") {
+            let state_bytes: Option<Vec<u8>> = if matches!(engine, "hma" | "pif" | "copg" | "tee") {
+                let enabled = match engine {
+                    "hma" | "pif" => !Path::new(&format!("{data_dir}/{engine}.disabled")).exists(),
+                    "copg" | "tee" => Path::new(&format!("{data_dir}/{engine}.enabled")).exists(),
+                    _ => false,
+                };
+                let tee_runtime_active =
+                    Path::new(&format!("{data_dir}/tee.runtime_active")).exists();
+                let boot_id = runtime_ack_boot_id();
+                let snapshot = if !enabled {
+                    RuntimeConfigSnapshot::default()
+                } else {
+                    match engine {
+                        "hma" => read_runtime_config_snapshot(data_dir, "hma", "hma.json")
+                            .unwrap_or_default(),
+                        "pif" => read_runtime_config_snapshot(data_dir, "pif", "pif.json")
+                            .unwrap_or_default(),
+                        "copg" => read_runtime_config_snapshot(data_dir, "copg", "spoof.json")
+                            .unwrap_or_default(),
+                        "tee" => {
+                            let bytes = NativeStore::open(data_dir)
+                                .and_then(|s| s.read("keybox.xml", true))
+                                .unwrap_or_default();
+                            RuntimeConfigSnapshot {
+                                bytes,
+                                boot_id: boot_id.clone(),
+                                ..Default::default()
+                            }
+                        }
+                        _ => RuntimeConfigSnapshot::default(),
+                    }
+                };
+                if engine == "hma"
+                    && enabled
+                    && have_peercred
+                    && (cr.uid == 0 || resolve_live_uid(peer_pid) == Some(1000))
+                {
+                    keepalive_server = true;
+                }
+                let state = CompanionEngineState {
+                    enabled,
+                    tee_runtime_active,
+                    boot_id,
+                    snapshot,
+                };
+                serde_json::to_vec(&state)
+                    .ok()
+                    .filter(|b| b.len() <= MAX_COMPANION_PAYLOAD_BYTES)
+            } else {
+                None
+            };
+
+            match state_bytes {
+                Some(payload) => {
+                    let len_u32 = u32::try_from(payload.len()).unwrap_or(0);
+                    let ok_status = 0i32.to_ne_bytes();
+                    let len_bytes = len_u32.to_ne_bytes();
+                    if !write_companion_bytes(client_socket, &ok_status)
+                        || !write_companion_bytes(client_socket, &len_bytes)
+                        || (!payload.is_empty() && !write_companion_bytes(client_socket, &payload))
+                    {
+                        break;
+                    }
+                }
+                None => {
+                    let err_status = (-1i32).to_ne_bytes();
+                    if !write_companion_bytes(client_socket, &err_status) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+
         let mut result: i32 = -1;
 
         if command == "mount_spoof" || command.starts_with("mount_cpu:") {
@@ -303,13 +401,14 @@ pub fn handle_companion_session_with_dir(
             });
         } else if let Some(payload) = command.strip_prefix("ack:") {
             if have_peercred {
+                let allow_bootstrap = cr.uid == 0;
                 if let Some(ack) = parse_runtime_ack(payload) {
                     let uid_matches = resolve_live_uid(peer_pid)
                         .is_some_and(|live| ack.uid == live && (cr.uid == 0 || cr.uid == live));
                     if ack.pid != peer_pid
                         || !uid_matches
                         || validate_runtime_ack(&ack).is_err()
-                        || !runtime_ack_has_live_identity(&ack)
+                        || !runtime_ack_has_live_identity_with_bootstrap(&ack, allow_bootstrap)
                     {
                         log_warn!(
                             "KaoriosHelper companion: rejected unauthorized runtime ack from pid={} peer_uid={} ({})",
@@ -319,7 +418,11 @@ pub fn handle_companion_session_with_dir(
                         );
                         result = -1;
                     } else {
-                        result = if write_runtime_ack_for_current_config(data_dir, &ack) {
+                        result = if write_runtime_ack_for_current_config_with_bootstrap(
+                            data_dir,
+                            &ack,
+                            allow_bootstrap,
+                        ) {
                             0
                         } else {
                             -2

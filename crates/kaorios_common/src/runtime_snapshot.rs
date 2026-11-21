@@ -2,15 +2,17 @@
 // Copyright (C) 2026 HzzMonet / Kaorios Project
 
 use crate::ack_protocol::{
-    bind_runtime_ack_to_current_process, publish_runtime_ack, runtime_ack_boot_id,
-    runtime_ack_has_live_identity, runtime_ack_matches_current, runtime_ack_now_millis,
-    validate_runtime_ack, RuntimeAck,
+    bind_runtime_ack_to_current_process, publish_runtime_ack_with_bootstrap, runtime_ack_boot_id,
+    runtime_ack_has_live_identity_with_bootstrap, runtime_ack_matches_current_with_bootstrap,
+    runtime_ack_now_millis, validate_runtime_ack, RuntimeAck,
 };
 use crate::config_identity::config_sha256;
 use crate::native_store::NativeStore;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RuntimeConfigSnapshot {
     pub bytes: String,
     pub config_hash: String,
@@ -122,12 +124,15 @@ pub fn bind_runtime_ack_to_snapshot(
     ack: &mut RuntimeAck,
     snapshot: &RuntimeConfigSnapshot,
 ) -> bool {
+    let local_boot = runtime_ack_boot_id();
     if snapshot.generation == 0
-        || snapshot.boot_id != runtime_ack_boot_id()
+        || snapshot.boot_id.is_empty()
+        || (!local_boot.is_empty() && snapshot.boot_id != local_boot)
         || snapshot.config_hash != config_sha256(snapshot.bytes.as_bytes())
     {
         return false;
     }
+    ack.boot_id = snapshot.boot_id.clone();
     if !bind_runtime_ack_to_current_process(
         ack,
         snapshot.generation,
@@ -140,7 +145,17 @@ pub fn bind_runtime_ack_to_snapshot(
 }
 
 pub fn write_runtime_ack_for_current_config(data_dir: &str, ack: &RuntimeAck) -> bool {
-    if validate_runtime_ack(ack).is_err() || !runtime_ack_has_live_identity(ack) {
+    write_runtime_ack_for_current_config_with_bootstrap(data_dir, ack, false)
+}
+
+pub fn write_runtime_ack_for_current_config_with_bootstrap(
+    data_dir: &str,
+    ack: &RuntimeAck,
+    allow_zygote_bootstrap: bool,
+) -> bool {
+    if validate_runtime_ack(ack).is_err()
+        || !runtime_ack_has_live_identity_with_bootstrap(ack, allow_zygote_bootstrap)
+    {
         return false;
     }
     let Ok(store) = NativeStore::open(data_dir) else {
@@ -200,14 +215,20 @@ pub fn write_runtime_ack_for_current_config(data_dir: &str, ack: &RuntimeAck) ->
     let Ok(cfg_bytes) = store.read(&filename, false) else {
         return false;
     };
-    if !runtime_ack_matches_current(
+    if !runtime_ack_matches_current_with_bootstrap(
         ack,
         &ack.engine,
         ack.config_generation,
         cfg_bytes.as_bytes(),
         token,
+        allow_zygote_bootstrap,
     ) {
         return false;
     }
-    publish_runtime_ack(&format!("{data_dir}/runtime"), ack, token)
+    publish_runtime_ack_with_bootstrap(
+        &format!("{data_dir}/runtime"),
+        ack,
+        token,
+        allow_zygote_bootstrap,
+    )
 }

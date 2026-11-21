@@ -588,7 +588,30 @@ pub fn runtime_ack_read_process_identity(
     Some((effective as libc::uid_t, before, cmdline))
 }
 
+pub fn is_pre_argv0_zygote_cmdline(cmdline: &str) -> bool {
+    matches!(
+        cmdline,
+        "zygote"
+            | "zygote64"
+            | "usap32"
+            | "usap64"
+            | "<pre-initialized>"
+            | "app_process"
+            | "app_process32"
+            | "app_process64"
+    ) || cmdline.ends_with("/app_process")
+        || cmdline.ends_with("/app_process32")
+        || cmdline.ends_with("/app_process64")
+}
+
 pub fn runtime_ack_has_live_identity(ack: &RuntimeAck) -> bool {
+    runtime_ack_has_live_identity_with_bootstrap(ack, false)
+}
+
+pub fn runtime_ack_has_live_identity_with_bootstrap(
+    ack: &RuntimeAck,
+    allow_zygote_bootstrap: bool,
+) -> bool {
     if ack.schema_version != 2
         || validate_runtime_ack(ack).is_err()
         || ack.boot_id != runtime_ack_boot_id()
@@ -598,7 +621,9 @@ pub fn runtime_ack_has_live_identity(ack: &RuntimeAck) -> bool {
     let Some((uid, start, name)) = runtime_ack_read_process_identity(ack.pid) else {
         return false;
     };
-    if uid != ack.uid || start != ack.process_start_ticks || name != ack.process_name {
+    let name_ok =
+        name == ack.process_name || (allow_zygote_bootstrap && is_pre_argv0_zygote_cmdline(&name));
+    if uid != ack.uid || start != ack.process_start_ticks || !name_ok {
         return false;
     }
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
@@ -624,19 +649,51 @@ pub fn bind_runtime_ack_to_current_process(
     bound.schema_version = 2;
     bound.protocol_version = 2;
     bound.pid = unsafe { libc::getpid() };
-    let Some((uid, ticks, name)) = runtime_ack_read_process_identity(bound.pid) else {
+    let Some((uid, ticks, cmdline)) = runtime_ack_read_process_identity(bound.pid) else {
         return false;
     };
     bound.uid = uid;
     bound.process_start_ticks = ticks;
-    bound.process_name = name;
-    bound.boot_id = runtime_ack_boot_id();
+    let allow_bootstrap = if bound.process_name.is_empty() {
+        bound.process_name = cmdline;
+        false
+    } else if cmdline == bound.process_name {
+        false
+    } else if is_pre_argv0_zygote_cmdline(&cmdline) {
+        true
+    } else {
+        return false;
+    };
     bound.timestamp = runtime_ack_now_millis();
     bound.config_generation = generation;
     bound.config_hash = config_sha256(config_bytes);
     bound.request_id = request_id.to_string();
-    if !runtime_ack_has_live_identity(&bound) {
-        return false;
+
+    let local_boot = runtime_ack_boot_id();
+    if !local_boot.is_empty() {
+        bound.boot_id = local_boot;
+        if !runtime_ack_has_live_identity_with_bootstrap(&bound, allow_bootstrap) {
+            return false;
+        }
+    } else {
+        // Sandboxed untrusted_app contexts may lack SELinux read access to
+        // /proc/sys/kernel/random/boot_id; retain the companion-supplied boot_id
+        // which the root companion re-validates on submission.
+        if validate_runtime_ack(&bound).is_err() {
+            return false;
+        }
+        let rate_ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if rate_ticks <= 0 {
+            return false;
+        }
+        let rate = rate_ticks as u64;
+        if ticks / rate > u64::MAX / 1000 {
+            return false;
+        }
+        let start_millis = (ticks / rate) * 1000 + (ticks % rate) * 1000 / rate;
+        if bound.timestamp == 0 || bound.timestamp < start_millis {
+            return false;
+        }
     }
     *ack = bound;
     true
@@ -649,13 +706,31 @@ pub fn runtime_ack_matches_current(
     config_bytes: &[u8],
     request_id: &str,
 ) -> bool {
+    runtime_ack_matches_current_with_bootstrap(
+        ack,
+        engine,
+        generation,
+        config_bytes,
+        request_id,
+        false,
+    )
+}
+
+pub fn runtime_ack_matches_current_with_bootstrap(
+    ack: &RuntimeAck,
+    engine: &str,
+    generation: u64,
+    config_bytes: &[u8],
+    request_id: &str,
+    allow_zygote_bootstrap: bool,
+) -> bool {
     generation > 0
         && !request_id.is_empty()
         && ack.engine == engine
         && ack.config_generation == generation
         && ack.request_id == request_id
         && ack.config_hash == config_sha256(config_bytes)
-        && runtime_ack_has_live_identity(ack)
+        && runtime_ack_has_live_identity_with_bootstrap(ack, allow_zygote_bootstrap)
 }
 
 pub fn open_runtime_ack_directory(path: &str, create: bool) -> Option<libc::c_int> {
@@ -804,7 +879,15 @@ pub fn read_runtime_ack_at(dir_fd: libc::c_int, engine: &str) -> Option<RuntimeA
 }
 
 pub fn runtime_ack_advances(previous: &RuntimeAck, next: &RuntimeAck) -> bool {
-    if !runtime_ack_has_live_identity(next) {
+    runtime_ack_advances_with_bootstrap(previous, next, false)
+}
+
+pub fn runtime_ack_advances_with_bootstrap(
+    previous: &RuntimeAck,
+    next: &RuntimeAck,
+    allow_zygote_bootstrap: bool,
+) -> bool {
+    if !runtime_ack_has_live_identity_with_bootstrap(next, allow_zygote_bootstrap) {
         return false;
     }
     if previous.schema_version != 2 || previous.boot_id != next.boot_id {
@@ -837,7 +920,7 @@ pub fn runtime_ack_advances(previous: &RuntimeAck, next: &RuntimeAck) -> bool {
             || (next.config_generation == previous.config_generation
                 && next.request_id != previous.request_id);
     }
-    !runtime_ack_has_live_identity(previous)
+    !runtime_ack_has_live_identity_with_bootstrap(previous, allow_zygote_bootstrap)
         || next.process_start_ticks > previous.process_start_ticks
         || (next.process_start_ticks == previous.process_start_ticks
             && next.timestamp > previous.timestamp)
@@ -848,7 +931,18 @@ pub fn publish_runtime_ack(
     ack: &RuntimeAck,
     current_request_id: &str,
 ) -> bool {
-    if validate_runtime_ack(ack).is_err() || !runtime_ack_has_live_identity(ack) {
+    publish_runtime_ack_with_bootstrap(runtime_dir, ack, current_request_id, false)
+}
+
+pub fn publish_runtime_ack_with_bootstrap(
+    runtime_dir: &str,
+    ack: &RuntimeAck,
+    current_request_id: &str,
+    allow_zygote_bootstrap: bool,
+) -> bool {
+    if validate_runtime_ack(ack).is_err()
+        || !runtime_ack_has_live_identity_with_bootstrap(ack, allow_zygote_bootstrap)
+    {
         return false;
     }
     let serialized = ack.to_json_pretty();
@@ -873,13 +967,13 @@ pub fn publish_runtime_ack(
         return false;
     }
 
-    if !runtime_ack_has_live_identity(ack) {
+    if !runtime_ack_has_live_identity_with_bootstrap(ack, allow_zygote_bootstrap) {
         unsafe { libc::close(dir) };
         return false;
     }
     if let Some(previous) = read_runtime_ack_at(dir, &ack.engine) {
         if (current_request_id.is_empty() || previous.request_id == current_request_id)
-            && !runtime_ack_advances(&previous, ack)
+            && !runtime_ack_advances_with_bootstrap(&previous, ack, allow_zygote_bootstrap)
         {
             unsafe { libc::close(dir) };
             return false;

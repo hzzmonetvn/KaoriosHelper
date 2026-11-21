@@ -148,20 +148,13 @@ EOF
 [ -f "$MODPATH/data/hma.json" ] || {
   cat > "$MODPATH/data/hma.json" << 'EOF'
 {
-  "configVersion": 2,
+  "configVersion": 1,
   "detailLog": false,
-  "errorOnlyLog": false,
-  "maxLogSize": 512,
-  "forceMountData": true,
-  "disableActivityLaunchProtection": false,
-  "altAppDataIsolation": false,
-  "altVoldAppDataIsolation": false,
-  "skipSystemAppDataIsolation": true,
-  "webViewProtection": true,
-  "ignoreBrandProtections": false,
+  "webViewProtection": false,
   "templates": {},
   "settingsTemplates": {},
-  "disabledHooks": [],
+  "ignoredPackagesForPresets": [],
+  "installSourceSpoof": [],
   "scope": {}
 }
 EOF
@@ -231,6 +224,7 @@ chmod 0700 "$MODPATH/data" 2>/dev/null || true
 chmod 0700 "$MODPATH/data/logs" 2>/dev/null || true
 chmod 0600 "$MODPATH/data/"*.json 2>/dev/null || true
 [ -f "$MODPATH/data/keybox.xml" ] && chmod 0600 "$MODPATH/data/keybox.xml" 2>/dev/null || true
+[ -f "$MODPATH/classes.dex" ] && chmod 0644 "$MODPATH/classes.dex" 2>/dev/null || true
 
 # SELinux contexts
 chcon -R u:object_r:system_file:s0 "$MODPATH" 2>/dev/null || true

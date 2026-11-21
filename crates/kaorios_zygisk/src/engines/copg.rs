@@ -442,6 +442,10 @@ impl CopgEngine {
             log_warn!("COPG: Configuration snapshot unavailable; retaining existing known-good config");
             return false;
         };
+        self.apply_snapshot(snapshot, force)
+    }
+
+    pub fn apply_snapshot(&self, snapshot: RuntimeConfigSnapshot, force: bool) -> bool {
         if snapshot.bytes.is_empty() {
             return false;
         }
@@ -999,10 +1003,25 @@ impl Engine for CopgEngine {
     }
 
     fn should_handle_app(&mut self, process_name: &str, _uid: jint) -> bool {
-        if !self.is_enabled() || !self.is_package_allowed(process_name) {
+        if !self.is_package_allowed(process_name) {
             return false;
         }
-        self.reload_config_if_needed(false);
+        if let Some(api) = self.api {
+            let mut cs = CompanionSession::new();
+            let Some(state) = cs.fetch_engine_state(Some(&api as &dyn CompanionConnector), "copg")
+            else {
+                return false;
+            };
+            if !state.enabled {
+                return false;
+            }
+            let _ = self.apply_snapshot(state.snapshot, false);
+        } else {
+            if !self.is_enabled() {
+                return false;
+            }
+            self.reload_config_if_needed(false);
+        }
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if st.target_packages.contains(process_name) {
             return true;
@@ -1026,7 +1045,9 @@ impl Engine for CopgEngine {
         if !self.is_package_allowed(process_name) {
             return;
         }
-        self.reload_config_if_needed(false);
+        if self.api.is_none() {
+            self.reload_config_if_needed(false);
+        }
 
         let found = {
             let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1093,50 +1114,26 @@ impl Engine for CopgEngine {
         };
 
         self.cpu_mount_active = false;
-        let mut self_st: libc::stat = unsafe { std::mem::zeroed() };
-        let mut root_st: libc::stat = unsafe { std::mem::zeroed() };
-        let c_self = CString::new("/proc/self/ns/mnt").unwrap();
-        let c_root = CString::new("/proc/1/ns/mnt").unwrap();
-        let ns_isolated = unsafe {
-            libc::stat(c_self.as_ptr(), &mut self_st) == 0
-                && libc::stat(c_root.as_ptr(), &mut root_st) == 0
-                && self_st.st_ino != root_st.st_ino
-        };
-
-        if self.current_flags.needs_cpu_unmount && ns_isolated {
+        if self.current_flags.needs_cpu_unmount {
             self.execute_companion_command("unmount_spoof");
         } else if self.current_flags.needs_cpu_mount {
-            if ns_isolated {
-                let mut spoof_source = format!("{}/cpuinfo_spoof", self.data_dir);
-                if !Path::new(&spoof_source).exists() {
-                    spoof_source = "/data/adb/modules/COPG/cpuinfo_spoof".to_string();
-                }
-                if Path::new(&spoof_source).exists() {
-                    let pid = unsafe { libc::getpid() };
-                    let cmd = format!("mount_cpu:{pid}:{spoof_source}");
-                    self.execute_companion_command(&cmd);
-                    if let Ok(mi) = fs::read_to_string("/proc/self/mountinfo") {
-                        if mi.lines().any(|l| l.contains("/proc/cpuinfo")) {
-                            self.cpu_mount_active = true;
-                        }
-                    }
-                    if self.cpu_mount_active {
-                        log_info!("COPG: Target-private CPU mount confirmed active for {process_name}");
-                    } else {
-                        log_warn!(
-                            "COPG: CPU mount requested and submitted for {process_name}, but /proc/cpuinfo mount not observed in mountinfo"
-                        );
+            let pid = unsafe { libc::getpid() };
+            let cmd = format!("mount_cpu:{pid}:");
+            if self.execute_companion_command(&cmd) {
+                if let Ok(mi) = fs::read_to_string("/proc/self/mountinfo") {
+                    if mi.lines().any(|l| l.contains("/proc/cpuinfo")) {
+                        self.cpu_mount_active = true;
                     }
                 } else {
+                    self.cpu_mount_active = true;
+                }
+                if self.cpu_mount_active {
+                    log_info!("COPG: Target-private CPU mount confirmed active for {process_name}");
+                } else {
                     log_warn!(
-                        "COPG: CPU mount requested for {process_name}, but cpuinfo_spoof file missing at {spoof_source}"
+                        "COPG: CPU mount requested and submitted for {process_name}, but /proc/cpuinfo mount not observed in mountinfo"
                     );
                 }
-            } else {
-                log_warn!(
-                    "COPG: CPU mount requested for {process_name}, but target namespace is not isolated (shares inode with PID 1: {}). Aborting mount to protect system namespace.",
-                    self_st.st_ino
-                );
             }
         }
 
