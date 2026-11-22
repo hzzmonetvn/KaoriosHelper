@@ -73,7 +73,13 @@ pub struct ApiTable {
     pub hook_jni_native_methods:
         Option<unsafe extern "C" fn(*mut JNIEnv, *const c_char, *mut JNINativeMethod, c_int)>,
     pub plt_hook_register: Option<
-        unsafe extern "C" fn(libc::dev_t, libc::ino_t, *const c_char, *mut c_void, *mut *mut c_void),
+        unsafe extern "C" fn(
+            libc::dev_t,
+            libc::ino_t,
+            *const c_char,
+            *mut c_void,
+            *mut *mut c_void,
+        ),
     >,
     pub exempt_fd: Option<unsafe extern "C" fn(c_int) -> bool>,
     pub plt_hook_commit: Option<unsafe extern "C" fn() -> bool>,

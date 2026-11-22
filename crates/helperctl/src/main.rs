@@ -152,8 +152,9 @@ impl HelperCtl {
     }
 
     fn parse_generation(text: &str) -> Result<u64, String> {
-        Self::read_generation(text)
-            .ok_or_else(|| "Invalid configuration generation; explicit migration required".to_string())
+        Self::read_generation(text).ok_or_else(|| {
+            "Invalid configuration generation; explicit migration required".to_string()
+        })
     }
 
     fn valid_request(request: &Value) -> bool {
@@ -349,8 +350,7 @@ impl HelperCtl {
                 } else {
                     store.exists(&format!("{name}.enabled"))?
                 };
-            s.runtime_available =
-                name == "pif" || name == "copg" || (name == "hma" && dex_exists);
+            s.runtime_available = name == "pif" || name == "copg" || (name == "hma" && dex_exists);
             let stored = Self::read_generation(&store.read(&format!("{name}.stored_gen"), true)?);
             let requested =
                 Self::read_generation(&store.read(&format!("{name}.requested_gen"), true)?);
@@ -444,7 +444,9 @@ impl HelperCtl {
                         let legacy_prop = store.read("pif.prop", true)?;
                         if !legacy_prop.is_empty() {
                             if let Ok(parsed) = parse_pif_settings(&legacy_prop) {
-                                if let Ok(pretty) = serde_json::to_string_pretty(&Value::Object(parsed)) {
+                                if let Ok(pretty) =
+                                    serde_json::to_string_pretty(&Value::Object(parsed))
+                                {
                                     mig_content = format!("{pretty}\n");
                                     mig_valid = Self::valid_config(name, &mig_content);
                                 }
@@ -536,9 +538,8 @@ impl HelperCtl {
                 s.status = "FAILED".to_string();
                 s.hook_initialized = "FAILED".to_string();
                 s.last_error = "Runtime reported configuration application failure".to_string();
-                s.details =
-                    "Current process reported failure; retry or restart remains pending"
-                        .to_string();
+                s.details = "Current process reported failure; retry or restart remains pending"
+                    .to_string();
             } else if initialized {
                 s.status = if s.runtime_observed {
                     "DEVICE_UNVERIFIED"
@@ -690,7 +691,9 @@ impl HelperCtl {
         } else if matches!(engine, "hma" | "pif" | "copg" | "tee") {
             vec![engine]
         } else {
-            eprintln!("Unknown engine for verification: {engine} (valid: hma, pif, copg, tee, all)");
+            eprintln!(
+                "Unknown engine for verification: {engine} (valid: hma, pif, copg, tee, all)"
+            );
             return 1;
         };
 
@@ -810,7 +813,8 @@ impl HelperCtl {
                 }
                 let req_text = store.read(&format!("{name}.request.json"), true)?;
                 let request: Value = serde_json::from_str(&req_text).unwrap_or(Value::Null);
-                let req_gen = Self::read_generation(&store.read(&format!("{name}.requested_gen"), true)?);
+                let req_gen =
+                    Self::read_generation(&store.read(&format!("{name}.requested_gen"), true)?);
                 if req_gen == Some(gen) && Self::valid_request(&request) {
                     continue;
                 }
@@ -856,7 +860,9 @@ impl HelperCtl {
         })();
         match res {
             Ok(()) => {
-                println!("PENDING: Reload request recorded; existing processes may require restart.");
+                println!(
+                    "PENDING: Reload request recorded; existing processes may require restart."
+                );
                 0
             }
             Err(e) => {
@@ -969,9 +975,7 @@ impl HelperCtl {
                 0
             }
             Err(e) => {
-                eprintln!(
-                    "Synchronization failed: {e}; publication may require journal recovery"
-                );
+                eprintln!("Synchronization failed: {e}; publication may require journal recovery");
                 1
             }
         }
@@ -990,7 +994,8 @@ impl HelperCtl {
             let mut changes = Changes::new();
             for name in engines {
                 let filename = Self::config_name(name)?;
-                let generation = Self::read_generation(&store.read(&format!("{name}.stored_gen"), true)?);
+                let generation =
+                    Self::read_generation(&store.read(&format!("{name}.stored_gen"), true)?);
                 let mut content = store.read(&filename, true)?;
                 if content.is_empty() && name == "copg" {
                     content = store.read("COPG.json", true)?;
@@ -1007,7 +1012,9 @@ impl HelperCtl {
                 }
                 if content.is_empty() {
                     if generation.is_none() {
-                        return Err(format!("{name}: valid payload required before metadata repair"));
+                        return Err(format!(
+                            "{name}: valid payload required before metadata repair"
+                        ));
                     }
                     continue;
                 }
@@ -1334,7 +1341,9 @@ fn main() -> ExitCode {
                     }
                 }
                 if bad || target_eng.is_empty() {
-                    eprintln!("Usage: helperctl config get [--redacted] <pif|hma|tee|copg|kaorios>");
+                    eprintln!(
+                        "Usage: helperctl config get [--redacted] <pif|hma|tee|copg|kaorios>"
+                    );
                     1
                 } else {
                     ctl.cmd_config_get(&target_eng, redacted)

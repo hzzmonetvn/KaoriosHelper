@@ -56,7 +56,11 @@ impl NativeStore {
             libc::openat(
                 dir_fd,
                 lock_name.as_ptr(),
-                libc::O_CREAT | libc::O_RDWR | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                libc::O_CREAT
+                    | libc::O_RDWR
+                    | libc::O_NOFOLLOW
+                    | libc::O_NONBLOCK
+                    | libc::O_CLOEXEC,
                 0o600,
             )
         };
@@ -102,9 +106,18 @@ impl NativeStore {
         {
             return Err("Invalid configuration leaf name".to_string());
         }
-        let c_name = CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
+        let c_name =
+            CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatat(self.dir_fd, c_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } != 0 {
+        if unsafe {
+            libc::fstatat(
+                self.dir_fd,
+                c_name.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } != 0
+        {
             let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             if err == libc::ENOENT {
                 return Ok(());
@@ -119,9 +132,18 @@ impl NativeStore {
 
     pub fn exists(&self, name: &str) -> Result<bool, String> {
         self.check(name)?;
-        let c_name = CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
+        let c_name =
+            CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
-        if unsafe { libc::fstatat(self.dir_fd, c_name.as_ptr(), &mut st, libc::AT_SYMLINK_NOFOLLOW) } == 0 {
+        if unsafe {
+            libc::fstatat(
+                self.dir_fd,
+                c_name.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } == 0
+        {
             return Ok(true);
         }
         let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -142,7 +164,8 @@ impl NativeStore {
         limit: usize,
     ) -> Result<String, String> {
         self.check(name)?;
-        let c_name = CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
+        let c_name =
+            CString::new(name).map_err(|_| "Invalid configuration leaf name".to_string())?;
         let fd = unsafe {
             libc::openat(
                 self.dir_fd,
@@ -203,12 +226,17 @@ impl NativeStore {
         for _ in 0..100 {
             let c = COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
             tmp = format!(".staging.{pid}.{c}");
-            let c_tmp = CString::new(tmp.as_str()).map_err(|_| "Staging creation failed".to_string())?;
+            let c_tmp =
+                CString::new(tmp.as_str()).map_err(|_| "Staging creation failed".to_string())?;
             fd = unsafe {
                 libc::openat(
                     self.dir_fd,
                     c_tmp.as_ptr(),
-                    libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    libc::O_WRONLY
+                        | libc::O_CREAT
+                        | libc::O_EXCL
+                        | libc::O_NOFOLLOW
+                        | libc::O_CLOEXEC,
                     0o600,
                 )
             };
@@ -250,10 +278,14 @@ impl NativeStore {
             ok = false;
         }
 
-        let c_tmp = CString::new(tmp.as_str()).map_err(|_| "Configuration publication failed".to_string())?;
-        let c_name = CString::new(name).map_err(|_| "Configuration publication failed".to_string())?;
+        let c_tmp = CString::new(tmp.as_str())
+            .map_err(|_| "Configuration publication failed".to_string())?;
+        let c_name =
+            CString::new(name).map_err(|_| "Configuration publication failed".to_string())?;
         if ok {
-            ok = unsafe { libc::renameat(self.dir_fd, c_tmp.as_ptr(), self.dir_fd, c_name.as_ptr()) } == 0;
+            ok = unsafe {
+                libc::renameat(self.dir_fd, c_tmp.as_ptr(), self.dir_fd, c_name.as_ptr())
+            } == 0;
         }
         if !ok {
             unsafe { libc::unlinkat(self.dir_fd, c_tmp.as_ptr(), 0) };
@@ -309,7 +341,13 @@ impl NativeStore {
     }
 
     fn transaction_leaf(name: &str) -> bool {
-        for filename in ["hma.json", "pif.json", "keybox.xml", "spoof.json", "kaorios.json"] {
+        for filename in [
+            "hma.json",
+            "pif.json",
+            "keybox.xml",
+            "spoof.json",
+            "kaorios.json",
+        ] {
             if name == filename || name == format!("{filename}.lkg") {
                 return true;
             }
@@ -382,14 +420,12 @@ impl NativeStore {
             }
             return Ok(());
         }
-        let journal: Value = serde_json::from_str(&text)
-            .map_err(|_| "Invalid configuration journal".to_string())?;
+        let journal: Value =
+            serde_json::from_str(&text).map_err(|_| "Invalid configuration journal".to_string())?;
         let obj = journal
             .as_object()
             .ok_or_else(|| "Invalid configuration journal".to_string())?;
-        if obj.len() != 2
-            || obj.get("schemaVersion").and_then(|v| v.as_i64()) != Some(1)
-        {
+        if obj.len() != 2 || obj.get("schemaVersion").and_then(|v| v.as_i64()) != Some(1) {
             return Err("Invalid configuration journal".to_string());
         }
         let files = obj
@@ -476,7 +512,12 @@ pub fn validate_native_json(engine: &str, text: &str) -> bool {
             let trimmed = raw.trim().to_ascii_lowercase();
             matches!(trimmed.as_str(), "0" | "1" | "true" | "false")
         };
-        for k in ["spoofBuild", "spoofProps", "spoofProvider", "spoofSignature"] {
+        for k in [
+            "spoofBuild",
+            "spoofProps",
+            "spoofProvider",
+            "spoofSignature",
+        ] {
             if let Some(v) = obj.get(k) {
                 if !valid_pif_flag(v) {
                     return false;

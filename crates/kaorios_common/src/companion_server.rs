@@ -143,7 +143,8 @@ pub fn handle_companion_session_with_dir(
         }
 
         let root_ns_path = CString::new("/proc/1/ns/mnt").unwrap();
-        let root_ns = unsafe { libc::open(root_ns_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        let root_ns =
+            unsafe { libc::open(root_ns_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if root_ns >= 0 {
             let mut root_st: libc::stat = unsafe { std::mem::zeroed() };
             let same = unsafe { libc::fstat(root_ns, &mut root_st) } == 0
@@ -161,7 +162,8 @@ pub fn handle_companion_session_with_dir(
         }
 
         let self_ns_path = CString::new("/proc/self/ns/mnt").unwrap();
-        let self_ns = unsafe { libc::open(self_ns_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
+        let self_ns =
+            unsafe { libc::open(self_ns_path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if self_ns >= 0 {
             let mut self_st: libc::stat = unsafe { std::mem::zeroed() };
             let same = unsafe { libc::fstat(self_ns, &mut self_st) } == 0
@@ -228,21 +230,20 @@ pub fn handle_companion_session_with_dir(
     let mut read_buffer = Vec::new();
     let mut keepalive_server = false;
     loop {
-        let command =
-            match read_next_companion_command_status(client_socket, &mut read_buffer, idle_timeout_ms)
-            {
-                CompanionReadStatus::Command(cmd) => cmd,
-                CompanionReadStatus::Timeout => {
-                    if keepalive_server
-                        && peer_pid > 1
-                        && unsafe { libc::kill(peer_pid, 0) } == 0
-                    {
-                        continue;
-                    }
-                    break;
+        let command = match read_next_companion_command_status(
+            client_socket,
+            &mut read_buffer,
+            idle_timeout_ms,
+        ) {
+            CompanionReadStatus::Command(cmd) => cmd,
+            CompanionReadStatus::Timeout => {
+                if keepalive_server && peer_pid > 1 && unsafe { libc::kill(peer_pid, 0) } == 0 {
+                    continue;
                 }
-                CompanionReadStatus::Closed => break,
-            };
+                break;
+            }
+            CompanionReadStatus::Closed => break,
+        };
 
         if let Some(engine) = command.strip_prefix("fetch_state:") {
             let state_bytes: Option<Vec<u8>> = if matches!(engine, "hma" | "pif" | "copg" | "tee") {

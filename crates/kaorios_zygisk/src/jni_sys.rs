@@ -65,8 +65,7 @@ pub struct JNINativeInterface {
     pub IsInstanceOf: *mut c_void,
     pub GetMethodID:
         unsafe extern "C" fn(*mut JNIEnv, jclass, *const c_char, *const c_char) -> jmethodID,
-    pub CallObjectMethod:
-        unsafe extern "C" fn(*mut JNIEnv, jobject, jmethodID, ...) -> jobject,
+    pub CallObjectMethod: unsafe extern "C" fn(*mut JNIEnv, jobject, jmethodID, ...) -> jobject,
     pub CallObjectMethodV: *mut c_void,
     pub CallObjectMethodA: *mut c_void,
     pub CallBooleanMethod: *mut c_void,
@@ -366,7 +365,12 @@ pub unsafe fn delete_local_ref(env: *mut JNIEnv, obj: jobject) {
     }
 }
 
-pub unsafe fn set_static_string_field(env: *mut JNIEnv, cls: jclass, name: &str, val: &str) -> bool {
+pub unsafe fn set_static_string_field(
+    env: *mut JNIEnv,
+    cls: jclass,
+    name: &str,
+    val: &str,
+) -> bool {
     if env.is_null() || cls.is_null() || val.is_empty() {
         return false;
     }

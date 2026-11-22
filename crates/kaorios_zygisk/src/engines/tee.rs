@@ -122,7 +122,9 @@ impl TeeEngine {
                         .unwrap_or("")
                         .to_string();
                     if tag_stack.last().map(String::as_str) != Some(closing_name.as_str()) {
-                        log_warn!("TEE: Unbalanced closing XML tag </{closing_name}> in keybox.xml");
+                        log_warn!(
+                            "TEE: Unbalanced closing XML tag </{closing_name}> in keybox.xml"
+                        );
                         xml_error = true;
                         break;
                     }

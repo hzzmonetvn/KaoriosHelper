@@ -85,7 +85,10 @@ fn pif_normalizes_security_patch_and_tee_coexistence() {
     let mut props = BTreeMap::new();
     let mut sp = 0;
     assert!(pif.load_config(&mut props, &mut sp));
-    assert_eq!(props.get("SECURITY_PATCH").map(String::as_str), Some("2024-05-05"));
+    assert_eq!(
+        props.get("SECURITY_PATCH").map(String::as_str),
+        Some("2024-05-05")
+    );
     assert_eq!(sp, 1);
     assert_eq!(
         PifEngine::resolve_spoofed_property("ro.product.model", ""),

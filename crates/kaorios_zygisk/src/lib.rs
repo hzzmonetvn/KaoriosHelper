@@ -55,10 +55,7 @@ unsafe extern "C" fn pre_server_specialize(impl_: *mut c_void, args: *mut Server
     }
 }
 
-unsafe extern "C" fn post_server_specialize(
-    impl_: *mut c_void,
-    args: *const ServerSpecializeArgs,
-) {
+unsafe extern "C" fn post_server_specialize(impl_: *mut c_void, args: *const ServerSpecializeArgs) {
     let lock = &*(impl_ as *const Mutex<Option<KaoriosDispatcher>>);
     if let Ok(mut guard) = lock.lock() {
         if let Some(d) = guard.as_mut() {

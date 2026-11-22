@@ -59,7 +59,11 @@ fn main() {
 
     if target_arch == "aarch64" {
         build.include(sh_dir.join("arch/arm64"));
-        files.extend(["arch/arm64/sh_a64.c", "arch/arm64/sh_inst.c", "arch/arm64/sh_glue.S"]);
+        files.extend([
+            "arch/arm64/sh_a64.c",
+            "arch/arm64/sh_inst.c",
+            "arch/arm64/sh_glue.S",
+        ]);
         println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,arm64-v8a.so");
         println!("cargo:rustc-cdylib-link-arg=-Wl,-z,max-page-size=16384");
     } else if target_arch == "arm" {

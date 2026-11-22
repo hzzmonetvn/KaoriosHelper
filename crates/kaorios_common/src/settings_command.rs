@@ -9,6 +9,28 @@ const MAX_VALUE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CONCURRENT_READS: usize = 6;
 
+pub const SCALAR_BOOLEANS: &[&str] = &[
+    "kaorios_spoof_photos",
+    "kaorios_spoof_netflix",
+    "kaorios_spoof_disney_plus",
+    "kaorios_spoof_messenger_chathead",
+    "kaorios_spoof_pixel_apps",
+    "kaorios_spoof_meizu_music",
+    "kaorios_spoof_gms",
+    "kaorios_spoof_vending",
+    "kaorios_spoof_gameprops",
+    "kaorios_spoof_fakegapps",
+    "kaorios_secure_flag",
+    "kaorios_hide_app_work",
+    "kaorios_hide_dev_work",
+    "kaorios_secure_flag_work",
+    "kaorios_keybox_enabled",
+    "kaorios_keybox_apply_all",
+    "kaorios_always_strong",
+    "kaorios_advanced_features",
+    "kaorios_hide_usb_charging",
+];
+
 fn resolve_settings_binary() -> String {
     #[cfg(feature = "test-faults")]
     if let Ok(fixture) = std::env::var("KAORIOS_TEST_SETTINGS_BIN") {
@@ -210,8 +232,7 @@ fn read_global_settings_pass(
         }
 
         if !pfds.is_empty() {
-            let nfds =
-                libc::nfds_t::try_from(pfds.len()).unwrap_or(libc::nfds_t::MAX);
+            let nfds = libc::nfds_t::try_from(pfds.len()).unwrap_or(libc::nfds_t::MAX);
             let ready = unsafe { libc::poll(pfds.as_mut_ptr(), nfds, remaining_ms.max(1)) };
             if ready < 0 {
                 let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
@@ -287,4 +308,16 @@ pub fn capture_global_settings(keys: &[String]) -> Result<BTreeMap<String, Strin
         return Err("Settings changed during synchronization; retry explicitly".to_string());
     }
     Ok(first)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_command_scalar_booleans_include_fakegapps() {
+        assert_eq!(SCALAR_BOOLEANS.len(), 19);
+        assert!(SCALAR_BOOLEANS.contains(&"kaorios_spoof_fakegapps"));
+        assert_eq!(SCALAR_BOOLEANS, crate::settings_adapter::SCALAR_BOOLEANS);
+    }
 }

@@ -17,6 +17,7 @@ pub const SCALAR_BOOLEANS: &[&str] = &[
     "kaorios_spoof_gms",
     "kaorios_spoof_vending",
     "kaorios_spoof_gameprops",
+    "kaorios_spoof_fakegapps",
     "kaorios_secure_flag",
     "kaorios_hide_app_work",
     "kaorios_hide_dev_work",
@@ -28,7 +29,10 @@ pub const SCALAR_BOOLEANS: &[&str] = &[
     "kaorios_hide_usb_charging",
 ];
 
-fn get_setting<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<Option<&'a str>, String> {
+fn get_setting<'a>(
+    values: &'a BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<&'a str>, String> {
     let Some(raw) = values.get(key) else {
         return Ok(None);
     };
@@ -171,7 +175,10 @@ pub fn parse_pif_settings(raw: &str) -> Result<Map<String, Value>, String> {
     Ok(incoming)
 }
 
-fn adapt_copg(out: &mut Map<String, Value>, values: &BTreeMap<String, String>) -> Result<(), String> {
+fn adapt_copg(
+    out: &mut Map<String, Value>,
+    values: &BTreeMap<String, String>,
+) -> Result<(), String> {
     let mut enabled: Option<bool> = None;
     if let Some(raw) = get_setting(values, "kaorios_gameprops_json")? {
         let input = parse_object(raw)?;
@@ -248,7 +255,10 @@ fn adapt_copg(out: &mut Map<String, Value>, values: &BTreeMap<String, String>) -
                 };
                 mapped.insert(target_key.to_string(), Value::String(s.to_string()));
             }
-            let sec_obj = out.get_mut(section).and_then(|v| v.as_object_mut()).unwrap();
+            let sec_obj = out
+                .get_mut(section)
+                .and_then(|v| v.as_object_mut())
+                .unwrap();
             merge_object(sec_obj, pkg, mapped)?;
         }
     }
@@ -563,7 +573,10 @@ pub fn adapt_settings(
             }
         }
         "copg" => adapt_copg(&mut out, values)?,
-        "hma" => adapt_hma(&mut out, get_setting(values, "kaorios_hma_config")?.unwrap())?,
+        "hma" => adapt_hma(
+            &mut out,
+            get_setting(values, "kaorios_hma_config")?.unwrap(),
+        )?,
         "kaorios" => {
             let mut mapped = Map::new();
             for &key in SCALAR_BOOLEANS {
@@ -616,5 +629,23 @@ pub fn adapt_settings(
         let pretty = serde_json::to_string_pretty(&Value::Object(out))
             .map_err(|_| "Adapted settings configuration is invalid".to_string())?;
         Ok(Some(format!("{pretty}\n")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_adapter_scalar_booleans_include_fakegapps() {
+        assert_eq!(SCALAR_BOOLEANS.len(), 19);
+        assert!(SCALAR_BOOLEANS.contains(&"kaorios_spoof_fakegapps"));
+        let keys = settings_keys("kaorios").unwrap();
+        assert!(keys.iter().any(|k| k == "kaorios_spoof_fakegapps"));
+
+        let mut vals = BTreeMap::new();
+        vals.insert("kaorios_spoof_fakegapps".to_string(), "1".to_string());
+        let out = adapt_settings("kaorios", "", &vals).unwrap().unwrap();
+        assert!(out.contains("\"kaorios_spoof_fakegapps\": \"1\""));
     }
 }

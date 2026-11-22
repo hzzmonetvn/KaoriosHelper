@@ -8,7 +8,10 @@ pub const SHADOWHOOK_MODE_SHARED: c_int = 0;
 pub const SHADOWHOOK_MODE_UNIQUE: c_int = 1;
 pub const SHADOWHOOK_ERRNO_PENDING: c_int = 1;
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 extern "C" {
     pub fn shadowhook_init(mode: c_int, debuggable: bool) -> c_int;
     pub fn shadowhook_get_errno() -> c_int;
@@ -19,17 +22,26 @@ extern "C" {
     ) -> *mut c_void;
 }
 
-#[cfg(not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))))]
+#[cfg(not(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+)))]
 pub unsafe fn shadowhook_init(_mode: c_int, _debuggable: bool) -> c_int {
     0
 }
 
-#[cfg(not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))))]
+#[cfg(not(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+)))]
 pub unsafe fn shadowhook_get_errno() -> c_int {
     0
 }
 
-#[cfg(not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))))]
+#[cfg(not(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+)))]
 pub unsafe fn shadowhook_hook_sym_addr(
     _sym_addr: *mut c_void,
     _new_addr: *mut c_void,

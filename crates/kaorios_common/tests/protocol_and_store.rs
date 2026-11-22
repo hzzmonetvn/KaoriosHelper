@@ -68,11 +68,17 @@ fn native_store_transaction_and_journal() {
     let store = NativeStore::open(&dir_str).unwrap();
 
     let mut changes = Changes::new();
-    changes.insert("pif.json".to_string(), Some("{\"MODEL\":\"Pixel 8\"}\n".to_string()));
+    changes.insert(
+        "pif.json".to_string(),
+        Some("{\"MODEL\":\"Pixel 8\"}\n".to_string()),
+    );
     changes.insert("pif.stored_gen".to_string(), Some("1\n".to_string()));
     store.transaction(&changes).unwrap();
 
-    assert_eq!(store.read("pif.json", false).unwrap(), "{\"MODEL\":\"Pixel 8\"}\n");
+    assert_eq!(
+        store.read("pif.json", false).unwrap(),
+        "{\"MODEL\":\"Pixel 8\"}\n"
+    );
     assert_eq!(store.read("pif.stored_gen", false).unwrap(), "1\n");
     drop(store);
 
@@ -105,12 +111,20 @@ fn settings_adapter_maps_pif_copg_and_hma() {
     assert!(copg_out.contains("\"ro.build.id\": \"UP1A\""));
 
     assert!(!settings_keys("all").unwrap().is_empty());
+    assert!(settings_keys("kaorios")
+        .unwrap()
+        .contains(&"kaorios_spoof_fakegapps".to_string()));
 
     let mut dummy_ack = RuntimeAck {
         engine: "pif".to_string(),
         ..Default::default()
     };
-    let _ = bind_runtime_ack_to_current_process(&mut dummy_ack, 1, b"{}", "0123456789abcdef0123456789abcdef");
+    let _ = bind_runtime_ack_to_current_process(
+        &mut dummy_ack,
+        1,
+        b"{}",
+        "0123456789abcdef0123456789abcdef",
+    );
 }
 
 struct TestPairConnector(libc::c_int);
@@ -155,7 +169,10 @@ fn companion_fetch_state_and_keepalive_over_socketpair() {
             "{{\"requestId\":\"{req_id}\",\"bootId\":\"{boot}\",\"notBeforeMillis\":{not_before}}}"
         )),
     );
-    changes.insert("pif.json".to_string(), Some("{\"MODEL\":\"Pixel 9\"}\n".to_string()));
+    changes.insert(
+        "pif.json".to_string(),
+        Some("{\"MODEL\":\"Pixel 9\"}\n".to_string()),
+    );
     changes.insert("tee.enabled".to_string(), Some(String::new()));
     changes.insert("keybox.xml".to_string(), Some("<Keybox/>".to_string()));
     store.transaction(&changes).unwrap();

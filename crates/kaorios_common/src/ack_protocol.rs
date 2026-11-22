@@ -386,9 +386,7 @@ pub fn validate_runtime_ack(ack: &RuntimeAck) -> Result<(), &'static str> {
 
     if ack.schema_version == 2 {
         let is_lower_hex = |s: &str, len: usize| {
-            s.len() == len
-                && s.bytes()
-                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+            s.len() == len && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
         };
         let valid_boot = ack.boot_id.len() == 36
             && ack.boot_id.bytes().enumerate().all(|(i, c)| {
@@ -530,9 +528,7 @@ pub fn runtime_ack_now_millis() -> u64 {
         .saturating_add((now.tv_nsec as u64) / 1_000_000)
 }
 
-pub fn runtime_ack_read_process_identity(
-    pid: libc::pid_t,
-) -> Option<(libc::uid_t, u64, String)> {
+pub fn runtime_ack_read_process_identity(pid: libc::pid_t) -> Option<(libc::uid_t, u64, String)> {
     if pid <= 0 {
         return None;
     }
@@ -796,10 +792,7 @@ pub fn open_runtime_ack_directory(path: &str, create: bool) -> Option<libc::c_in
 
     let mut st: libc::stat = unsafe { std::mem::zeroed() };
     let euid = unsafe { libc::geteuid() };
-    if unsafe { libc::fstat(fd, &mut st) } != 0
-        || st.st_uid != euid
-        || (st.st_mode & 0o022) != 0
-    {
+    if unsafe { libc::fstat(fd, &mut st) } != 0 || st.st_uid != euid || (st.st_mode & 0o022) != 0 {
         unsafe { libc::close(fd) };
         return None;
     }
@@ -836,13 +829,7 @@ pub fn read_runtime_ack_at(dir_fd: libc::c_int, engine: &str) -> Option<RuntimeA
     let mut bytes = vec![0u8; expected];
     let mut offset = 0usize;
     while offset < expected {
-        let n = unsafe {
-            libc::read(
-                fd,
-                bytes[offset..].as_mut_ptr().cast(),
-                expected - offset,
-            )
-        };
+        let n = unsafe { libc::read(fd, bytes[offset..].as_mut_ptr().cast(), expected - offset) };
         if n < 0 {
             let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
             if err == libc::EINTR {
@@ -926,11 +913,7 @@ pub fn runtime_ack_advances_with_bootstrap(
             && next.timestamp > previous.timestamp)
 }
 
-pub fn publish_runtime_ack(
-    runtime_dir: &str,
-    ack: &RuntimeAck,
-    current_request_id: &str,
-) -> bool {
+pub fn publish_runtime_ack(runtime_dir: &str, ack: &RuntimeAck, current_request_id: &str) -> bool {
     publish_runtime_ack_with_bootstrap(runtime_dir, ack, current_request_id, false)
 }
 

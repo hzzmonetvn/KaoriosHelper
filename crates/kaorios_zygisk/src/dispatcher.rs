@@ -54,10 +54,7 @@ impl KaoriosDispatcher {
         );
     }
 
-    unsafe fn resolve_app_process_name(
-        env: *mut JNIEnv,
-        args: *const AppSpecializeArgs,
-    ) -> String {
+    unsafe fn resolve_app_process_name(env: *mut JNIEnv, args: *const AppSpecializeArgs) -> String {
         if args.is_null() {
             return String::new();
         }

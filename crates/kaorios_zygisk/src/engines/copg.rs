@@ -32,39 +32,57 @@ use std::sync::Mutex;
 
 static COPG_ACTIVE_INSTANCE: AtomicPtr<CopgEngine> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg_attr(
-    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    not(all(
+        target_os = "android",
+        any(target_arch = "arm", target_arch = "aarch64")
+    )),
     allow(dead_code)
 )]
 static ORIG_PLT_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg_attr(
-    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    not(all(
+        target_os = "android",
+        any(target_arch = "arm", target_arch = "aarch64")
+    )),
     allow(dead_code)
 )]
 static ORIG_LIBC_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg_attr(
-    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    not(all(
+        target_os = "android",
+        any(target_arch = "arm", target_arch = "aarch64")
+    )),
     allow(dead_code)
 )]
 static ORIG_LIBC_READ_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 const PROP_VALUE_MAX: usize = 92;
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 type CopgPropCallback = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, u32);
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 #[repr(C)]
 struct CopgCallbackContext {
     original_callback: CopgPropCallback,
     original_cookie: *mut c_void,
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
-unsafe extern "C" fn my_copg_system_property_get(
-    name: *const c_char,
-    value: *mut c_char,
-) -> c_int {
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
+unsafe extern "C" fn my_copg_system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
     if !name.is_null() && !value.is_null() {
         let eng_ptr = COPG_ACTIVE_INSTANCE.load(Ordering::Acquire);
         if !eng_ptr.is_null() {
@@ -90,11 +108,11 @@ unsafe extern "C" fn my_copg_system_property_get(
     -1
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
-unsafe extern "C" fn copg_shadow_property_get(
-    name: *const c_char,
-    value: *mut c_char,
-) -> c_int {
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
+unsafe extern "C" fn copg_shadow_property_get(name: *const c_char, value: *mut c_char) -> c_int {
     if !name.is_null() && !value.is_null() {
         let eng_ptr = COPG_ACTIVE_INSTANCE.load(Ordering::Acquire);
         if !eng_ptr.is_null() {
@@ -120,7 +138,10 @@ unsafe extern "C" fn copg_shadow_property_get(
     0
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 unsafe extern "C" fn copg_modify_read_callback(
     cookie: *mut c_void,
     name: *const c_char,
@@ -147,7 +168,10 @@ unsafe extern "C" fn copg_modify_read_callback(
     (ctx.original_callback)(ctx.original_cookie, name, value, serial);
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 unsafe extern "C" fn copg_shadow_read_callback(
     pi: *const c_void,
     callback: Option<CopgPropCallback>,
@@ -166,7 +190,11 @@ unsafe extern "C" fn copg_shadow_read_callback(
         original_callback: cb,
         original_cookie: cookie,
     };
-    orig(pi, copg_modify_read_callback, (&mut ctx as *mut CopgCallbackContext).cast());
+    orig(
+        pi,
+        copg_modify_read_callback,
+        (&mut ctx as *mut CopgCallbackContext).cast(),
+    );
 }
 
 #[derive(Debug, Clone, Default)]
@@ -438,8 +466,11 @@ impl CopgEngine {
     }
 
     pub fn reload_config_if_needed(&self, force: bool) -> bool {
-        let Ok(snapshot) = read_runtime_config_snapshot(&self.data_dir, "copg", "spoof.json") else {
-            log_warn!("COPG: Configuration snapshot unavailable; retaining existing known-good config");
+        let Ok(snapshot) = read_runtime_config_snapshot(&self.data_dir, "copg", "spoof.json")
+        else {
+            log_warn!(
+                "COPG: Configuration snapshot unavailable; retaining existing known-good config"
+            );
             return false;
         };
         self.apply_snapshot(snapshot, force)
@@ -469,7 +500,10 @@ impl CopgEngine {
         };
 
         if root.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
-            log_info!("COPG: Feature globally disabled in {}/spoof.json", self.data_dir);
+            log_info!(
+                "COPG: Feature globally disabled in {}/spoof.json",
+                self.data_dir
+            );
             st.target_packages.clear();
             st.package_configs.clear();
             st.cpu_blacklist.clear();
@@ -553,7 +587,9 @@ impl CopgEngine {
                 let with_cpu = raw_entry
                     .split_once(':')
                     .is_some_and(|(_, s)| s == "with_cpu" || s == "cpu");
-                if pkg_name.contains('.') && !pkg_name.contains('/') && self.is_package_allowed(pkg_name)
+                if pkg_name.contains('.')
+                    && !pkg_name.contains('/')
+                    && self.is_package_allowed(pkg_name)
                 {
                     new_targets.insert(pkg_name.to_string());
                     if let Some((_, existing_flags)) = new_configs.get_mut(pkg_name) {
@@ -634,11 +670,12 @@ impl CopgEngine {
 
     fn execute_companion_command(&mut self, command: &str) -> bool {
         let mut result = -1;
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
-        if !self.companion_session.request(api_ref, command, &mut result) {
+        let api_ref: Option<&dyn CompanionConnector> =
+            self.api.as_ref().map(|a| a as &dyn CompanionConnector);
+        if !self
+            .companion_session
+            .request(api_ref, command, &mut result)
+        {
             log_error!("COPG: Companion command '{command}' transport failed");
             return false;
         }
@@ -665,9 +702,15 @@ impl CopgEngine {
                 let mut parts = line.split_whitespace();
                 let Some(_range) = parts.next() else { continue };
                 let Some(perms) = parts.next() else { continue };
-                let Some(_offset) = parts.next() else { continue };
-                let Some(dev_str) = parts.next() else { continue };
-                let Some(inode_str) = parts.next() else { continue };
+                let Some(_offset) = parts.next() else {
+                    continue;
+                };
+                let Some(dev_str) = parts.next() else {
+                    continue;
+                };
+                let Some(inode_str) = parts.next() else {
+                    continue;
+                };
                 let Some(path) = parts.next() else { continue };
 
                 let inode: u64 = inode_str.parse().unwrap_or(0);
@@ -689,8 +732,12 @@ impl CopgEngine {
                 let Some((maj_s, min_s)) = dev_str.split_once(':') else {
                     continue;
                 };
-                let Ok(maj) = u32::from_str_radix(maj_s, 16) else { continue };
-                let Ok(min) = u32::from_str_radix(min_s, 16) else { continue };
+                let Ok(maj) = u32::from_str_radix(maj_s, 16) else {
+                    continue;
+                };
+                let Ok(min) = u32::from_str_radix(min_s, 16) else {
+                    continue;
+                };
                 let dev = unsafe { libc::makedev(maj, min) };
                 if hooked_inodes.insert((dev, inode)) {
                     hooks_attempted += 1;
@@ -743,7 +790,10 @@ impl CopgEngine {
         if self.late_hook_installed {
             return;
         }
-        #[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "arm", target_arch = "aarch64")
+        ))]
         unsafe {
             let sh_ret = shadowhook_init(SHADOWHOOK_MODE_SHARED, false);
             if sh_ret != 0 && sh_ret != SHADOWHOOK_ERRNO_PENDING {
@@ -786,7 +836,10 @@ impl CopgEngine {
                 );
             }
         }
-        #[cfg(not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))))]
+        #[cfg(not(all(
+            target_os = "android",
+            any(target_arch = "arm", target_arch = "aarch64")
+        )))]
         {
             let _ = (
                 shadowhook_init,
@@ -825,8 +878,12 @@ impl CopgEngine {
         exception_check_and_clear(env);
         let values_fld = get_field_id(env, nvc_cls, "mValues", "Landroid/util/ArrayMap;");
         exception_check_and_clear(env);
-        let tracks_fld =
-            get_field_id(env, nvc_cls, "mGenerationTrackers", "Landroid/util/ArrayMap;");
+        let tracks_fld = get_field_id(
+            env,
+            nvc_cls,
+            "mGenerationTrackers",
+            "Landroid/util/ArrayMap;",
+        );
         exception_check_and_clear(env);
         if cache_fld.is_null() || values_fld.is_null() || tracks_fld.is_null() {
             return false;
@@ -971,7 +1028,9 @@ impl CopgEngine {
                     fields_applied += 1;
                 }
             }
-            if info.should_spoof_serial && set_static_string_field(env, build_cls, "SERIAL", &info.serial) {
+            if info.should_spoof_serial
+                && set_static_string_field(env, build_cls, "SERIAL", &info.serial)
+            {
                 fields_applied += 1;
             }
             delete_local_ref(env, build_cls);
@@ -1076,10 +1135,8 @@ impl Engine for CopgEngine {
         COPG_ACTIVE_INSTANCE.store(self as *mut Self, Ordering::Release);
 
         log_info!("COPG preAppSpecialize for target app: {process_name}");
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
+        let api_ref: Option<&dyn CompanionConnector> =
+            self.api.as_ref().map(|a| a as &dyn CompanionConnector);
         self.companion_session.pre_specialize(api_ref);
 
         if self.current_flags.needs_plt_hook {
@@ -1092,7 +1149,9 @@ impl Engine for CopgEngine {
             self.companion_session.close_session();
             return;
         }
-        log_info!("COPG postAppSpecialize: applying game & device profile emulation for {process_name}");
+        log_info!(
+            "COPG postAppSpecialize: applying game & device profile emulation for {process_name}"
+        );
 
         let build_spoof_applied = if self.current_flags.needs_device_spoof {
             unsafe { self.apply_build_spoofing(&self.current_device_info) }
@@ -1159,9 +1218,8 @@ impl Engine for CopgEngine {
         if intercepted > 0 {
             ack.set_event(AckEventType::HookObserved);
             ack.init_result = 0;
-            ack.detail = format!(
-                "COPG property queries intercepted and spoofed ({intercepted} calls)"
-            );
+            ack.detail =
+                format!("COPG property queries intercepted and spoofed ({intercepted} calls)");
         } else if any_hook_initialized {
             ack.set_event(AckEventType::HookInitialized);
             ack.init_result = 0;
@@ -1186,10 +1244,8 @@ impl Engine for CopgEngine {
         } else {
             let mut resp = -1;
             let cmd = format!("ack:{}", ack.to_json_compact());
-            let api_ref: Option<&dyn CompanionConnector> = self
-                .api
-                .as_ref()
-                .map(|a| a as &dyn CompanionConnector);
+            let api_ref: Option<&dyn CompanionConnector> =
+                self.api.as_ref().map(|a| a as &dyn CompanionConnector);
             if !self.companion_session.request(api_ref, &cmd, &mut resp)
                 && unsafe { libc::geteuid() } == 0
             {

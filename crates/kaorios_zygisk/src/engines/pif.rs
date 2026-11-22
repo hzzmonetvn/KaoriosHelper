@@ -32,13 +32,22 @@ use std::sync::Mutex;
 static ACTIVE_SPOOF_PROPS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 static PROPERTIES_INTERCEPTED: AtomicU64 = AtomicU64::new(0);
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 const PROP_VALUE_MAX: usize = 92;
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 type PropCallback = unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char, u32);
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 #[repr(C)]
 struct PropertyCallbackContext {
     original_callback: PropCallback,
@@ -46,17 +55,26 @@ struct PropertyCallbackContext {
 }
 
 #[cfg_attr(
-    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    not(all(
+        target_os = "android",
+        any(target_arch = "arm", target_arch = "aarch64")
+    )),
     allow(dead_code)
 )]
 static ORIG_PROP_READ_CB: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 #[cfg_attr(
-    not(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64"))),
+    not(all(
+        target_os = "android",
+        any(target_arch = "arm", target_arch = "aarch64")
+    )),
     allow(dead_code)
 )]
 static ORIG_PROP_GET: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 unsafe extern "C" fn pif_modify_callback(
     cookie: *mut c_void,
     name: *const c_char,
@@ -80,7 +98,10 @@ unsafe extern "C" fn pif_modify_callback(
     (ctx.original_callback)(ctx.original_cookie, name, value, serial);
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 unsafe extern "C" fn my_system_property_read_callback(
     pi: *const c_void,
     callback: Option<PropCallback>,
@@ -99,10 +120,17 @@ unsafe extern "C" fn my_system_property_read_callback(
         original_callback: cb,
         original_cookie: cookie,
     };
-    orig(pi, pif_modify_callback, (&mut ctx as *mut PropertyCallbackContext).cast());
+    orig(
+        pi,
+        pif_modify_callback,
+        (&mut ctx as *mut PropertyCallbackContext).cast(),
+    );
 }
 
-#[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+#[cfg(all(
+    target_os = "android",
+    any(target_arch = "arm", target_arch = "aarch64")
+))]
 unsafe extern "C" fn my_system_property_get(name: *const c_char, value: *mut c_char) -> c_int {
     if name.is_null() || value.is_null() {
         return 0;
@@ -363,22 +391,23 @@ impl PifEngine {
                 match serde_json::from_str::<Value>(&snapshot.bytes) {
                     Ok(Value::Object(m)) => m,
                     Ok(_) => {
-                        log_warn!("PIF: JSON root is not an object in {}/pif.json", self.data_dir);
+                        log_warn!(
+                            "PIF: JSON root is not an object in {}/pif.json",
+                            self.data_dir
+                        );
                         return self.restore_last_known_good(props, spoof_provider);
                     }
                     Err(e) => {
-                        log_warn!("PIF: Failed to parse {}/pif.json as JSON ({e})", self.data_dir);
+                        log_warn!(
+                            "PIF: Failed to parse {}/pif.json as JSON ({e})",
+                            self.data_dir
+                        );
                         return self.restore_last_known_good(props, spoof_provider);
                     }
                 }
             };
 
-        if root_obj.is_empty()
-            || root_obj
-                .get("enabled")
-                .and_then(|v| v.as_bool())
-                == Some(false)
-        {
+        if root_obj.is_empty() || root_obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
             log_info!("PIF: Configuration is empty or explicitly disabled");
             props.clear();
             ACTIVE_SPOOF_PROPS
@@ -493,7 +522,10 @@ impl PifEngine {
 
         props.insert("ro.boot.flash.locked".to_string(), "1".to_string());
         props.insert("ro.boot.verifiedbootstate".to_string(), "green".to_string());
-        props.insert("ro.boot.vbmeta.device_state".to_string(), "locked".to_string());
+        props.insert(
+            "ro.boot.vbmeta.device_state".to_string(),
+            "locked".to_string(),
+        );
 
         if self.is_tee_active() && *spoof_provider != 0 {
             log_warn!(
@@ -518,7 +550,10 @@ impl PifEngine {
         if self.hook_installed {
             return;
         }
-        #[cfg(all(target_os = "android", any(target_arch = "arm", target_arch = "aarch64")))]
+        #[cfg(all(
+            target_os = "android",
+            any(target_arch = "arm", target_arch = "aarch64")
+        ))]
         unsafe {
             let sh_ret = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
             if sh_ret != 0 && sh_ret != SHADOWHOOK_ERRNO_PENDING {
@@ -723,9 +758,7 @@ impl PifEngine {
         );
 
         let mut installed = false;
-        if !exception_check_and_clear(env)
-            && !in_mem_loader.is_null()
-            && !load_class_mid.is_null()
+        if !exception_check_and_clear(env) && !in_mem_loader.is_null() && !load_class_mid.is_null()
         {
             let entry_name = new_string_utf(env, "es.chiteroman.playintegrityfix.EntryPoint");
             let entry_cls: jclass = if !entry_name.is_null() {
@@ -782,7 +815,9 @@ impl Engine for PifEngine {
             if !self.companion_session.has_retained_socket() {
                 self.companion_session.pre_specialize(Some(api_ref));
             }
-            let Some(state) = self.companion_session.fetch_engine_state(Some(api_ref), "pif")
+            let Some(state) = self
+                .companion_session
+                .fetch_engine_state(Some(api_ref), "pif")
             else {
                 self.companion_session.close_session();
                 return false;
@@ -820,10 +855,8 @@ impl Engine for PifEngine {
         } else {
             self.pif_dex_bytes.clear();
         }
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
+        let api_ref: Option<&dyn CompanionConnector> =
+            self.api.as_ref().map(|a| a as &dyn CompanionConnector);
         if !self.companion_session.has_retained_socket() {
             self.companion_session.pre_specialize(api_ref);
         }
@@ -957,10 +990,8 @@ impl Engine for PifEngine {
 
         let mut resp = -1;
         let cmd = format!("ack:{}", ack.to_json_compact());
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
+        let api_ref: Option<&dyn CompanionConnector> =
+            self.api.as_ref().map(|a| a as &dyn CompanionConnector);
         if !self.companion_session.request(api_ref, &cmd, &mut resp)
             && unsafe { libc::geteuid() } == 0
         {

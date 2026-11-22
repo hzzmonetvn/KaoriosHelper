@@ -192,11 +192,17 @@ impl HmaEngine {
             return false;
         }
         let Ok(j) = serde_json::from_str::<Value>(&snapshot.bytes) else {
-            log_error!("HMA: Failed to parse {}/hma.json as valid JSON", self.data_dir);
+            log_error!(
+                "HMA: Failed to parse {}/hma.json as valid JSON",
+                self.data_dir
+            );
             return false;
         };
         let Some(root) = j.as_object() else {
-            log_error!("HMA: Failed to parse {}/hma.json as valid JSON", self.data_dir);
+            log_error!(
+                "HMA: Failed to parse {}/hma.json as valid JSON",
+                self.data_dir
+            );
             return false;
         };
 
@@ -335,10 +341,7 @@ impl HmaEngine {
                         }
                     }
                     let mut opposites = BTreeSet::new();
-                    if let Some(arr) = rule
-                        .get("extraOppositeAppList")
-                        .and_then(|v| v.as_array())
-                    {
+                    if let Some(arr) = rule.get("extraOppositeAppList").and_then(|v| v.as_array()) {
                         for pkg in arr {
                             if let Some(s) = pkg.as_str() {
                                 if !s.is_empty() {
@@ -440,7 +443,11 @@ impl HmaEngine {
     }
 
     pub fn get_scope_size(&self) -> usize {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).scope_map.len()
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .scope_map
+            .len()
     }
 
     pub fn get_whitelist_size(&self) -> usize {
@@ -556,9 +563,7 @@ impl HmaEngine {
         let mut entry_class: jclass = std::ptr::null_mut();
         let mut fallback_class: jclass = std::ptr::null_mut();
 
-        if !exception_check_and_clear(env)
-            && !in_mem_loader.is_null()
-            && !load_class_mid.is_null()
+        if !exception_check_and_clear(env) && !in_mem_loader.is_null() && !load_class_mid.is_null()
         {
             for name in [
                 "org.frknkrc44.hma_oss.zygote.ZygoteEntry",
@@ -569,7 +574,8 @@ impl HmaEngine {
                     exception_check_and_clear(env);
                     continue;
                 }
-                let cand = (jni_vtbl(env).CallObjectMethod)(env, in_mem_loader, load_class_mid, jname);
+                let cand =
+                    (jni_vtbl(env).CallObjectMethod)(env, in_mem_loader, load_class_mid, jname);
                 delete_local_ref(env, jname);
                 if exception_check_and_clear(env) || cand.is_null() {
                     continue;
@@ -671,10 +677,8 @@ impl HmaEngine {
 
         let mut resp = -1;
         let cmd = format!("ack:{}", ack.to_json_compact());
-        let api_ref: Option<&dyn CompanionConnector> = self
-            .api
-            .as_ref()
-            .map(|a| a as &dyn CompanionConnector);
+        let api_ref: Option<&dyn CompanionConnector> =
+            self.api.as_ref().map(|a| a as &dyn CompanionConnector);
         if self
             .companion_session
             .lock()
@@ -718,7 +722,10 @@ impl Engine for HmaEngine {
     fn should_handle_server(&mut self) -> bool {
         if let Some(api) = self.api {
             let api_ref: &dyn CompanionConnector = &api;
-            let mut cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cs = self
+                .companion_session
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if !cs.has_retained_socket() {
                 cs.pre_specialize(Some(api_ref));
             }
@@ -751,7 +758,10 @@ impl Engine for HmaEngine {
             let _ = self.load_config();
         } else {
             let need_fetch = {
-                let cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+                let cs = self
+                    .companion_session
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 !cs.has_retained_socket() || !st.config_loaded
             };
@@ -759,7 +769,10 @@ impl Engine for HmaEngine {
                 if let Some(api) = self.api {
                     let api_ref: &dyn CompanionConnector = &api;
                     let fetched = {
-                        let mut cs = self.companion_session.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut cs = self
+                            .companion_session
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         if !cs.has_retained_socket() {
                             cs.pre_specialize(Some(api_ref));
                         }
@@ -875,7 +888,9 @@ impl Engine for HmaEngine {
             close_companion = true;
         }
 
-        log_info!("HMA: In-process PackageManagerService and SettingsProvider protection initialized");
+        log_info!(
+            "HMA: In-process PackageManagerService and SettingsProvider protection initialized"
+        );
         if close_companion {
             self.companion_session
                 .lock()

@@ -46,16 +46,17 @@ fn get_prop(key: &str) -> String {
 
 fn main() {
     let mut results = Vec::new();
-    let mut record = |name: &str, category: &str, passed: bool, expected: &str, actual: &str, details: &str| {
-        results.push(TestResult {
-            name: name.to_string(),
-            category: category.to_string(),
-            passed,
-            expected: expected.to_string(),
-            actual: actual.to_string(),
-            details: details.to_string(),
-        });
-    };
+    let mut record =
+        |name: &str, category: &str, passed: bool, expected: &str, actual: &str, details: &str| {
+            results.push(TestResult {
+                name: name.to_string(),
+                category: category.to_string(),
+                passed,
+                expected: expected.to_string(),
+                actual: actual.to_string(),
+                details: details.to_string(),
+            });
+        };
 
     let fp = get_prop("ro.build.fingerprint");
     record(
@@ -94,7 +95,11 @@ fn main() {
         "PIF_HOOK",
         !p_read_cb.is_null(),
         "Symbol present in libc",
-        if p_read_cb.is_null() { "Missing" } else { "Found" },
+        if p_read_cb.is_null() {
+            "Missing"
+        } else {
+            "Found"
+        },
         "",
     );
 
