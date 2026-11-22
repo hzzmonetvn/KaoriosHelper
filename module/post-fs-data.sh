@@ -12,6 +12,7 @@ chmod 0700 "$DATA_DIR" "$DATA_DIR/logs" || exit 1
 # Evidence from a previous boot must never establish current runtime state.
 rm -f "$DATA_DIR"/*.verified "$DATA_DIR/runtime/"*.ack.json "$DATA_DIR/runtime/"*.json
 # Refresh request identities before Zygote consumes configuration in this boot.
+[ -f "$MODDIR/helperctl" ] && [ ! -x "$MODDIR/helperctl" ] && chmod 0755 "$MODDIR/helperctl" 2>/dev/null || true
 if [ -f "$MODDIR/helperctl.sh" ]; then
   exec sh "$MODDIR/helperctl.sh" prepare-boot
 fi

@@ -80,6 +80,16 @@ class TestPackaging(unittest.TestCase):
                 # Verify permissions inside ZIP
                 for entry in zf.infolist():
                     mode = entry.external_attr >> 16
+                    self.assertEqual(
+                        mode & 0o170000,
+                        0o100000,
+                        f"Expected S_IFREG regular file bits for {entry.filename}",
+                    )
+                    self.assertEqual(
+                        entry.compress_type,
+                        zipfile.ZIP_DEFLATED,
+                        f"Expected ZIP_DEFLATED compression for {entry.filename}",
+                    )
                     if entry.filename.endswith(".sh") or "update-binary" in entry.filename:
                         self.assertEqual(
                             mode & 0o755,
@@ -180,6 +190,73 @@ class TestPackaging(unittest.TestCase):
         self.assertNotIn("resetprop", content)
         self.assertNotIn("resetprop", (MODULE_DIR / "service.sh").read_text())
         self.assertIn("chmod 0700", content)
+
+    def test_customize_sh_safe_when_sourced_by_kernelsu_installer(self):
+        customize_path = MODULE_DIR / "customize.sh"
+        script_text = customize_path.read_text()
+        for line in script_text.splitlines():
+            stripped = line.split("#", 1)[0].strip()
+            self.assertNotRegex(stripped, r"(?:^|\s)set\s+-[A-Za-z]*[eu]")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            modpath = base / "modpath"
+            (modpath / "bin" / "arm64-v8a").mkdir(parents=True)
+            (modpath / "zygisk").mkdir(parents=True)
+            (modpath / "bin" / "arm64-v8a" / "helperctl").write_text("#!/bin/sh\nexit 0\n")
+            (modpath / "classes.dex").write_bytes(b"dex\n039\x00")
+            (modpath / "zygisk" / "arm64-v8a.so").write_bytes(b"\x7fELF")
+            for sh_name in (
+                "customize.sh",
+                "post-fs-data.sh",
+                "service.sh",
+                "uninstall.sh",
+                "action.sh",
+                "helperctl.sh",
+            ):
+                (modpath / sh_name).write_text("#!/bin/sh\n")
+            (modpath / "customize.sh").write_text(script_text)
+
+            backup_dir = base / "backup"
+            harness = "\n".join(
+                [
+                    'MODPATH="$1"',
+                    "ui_print() { :; }",
+                    "abort() { echo \"$*\" >&2; exit 1; }",
+                    "getprop() {",
+                    "  case \"$1\" in",
+                    "    ro.build.version.sdk) echo 37 ;;",
+                    "    ro.product.cpu.abi) echo arm64-v8a ;;",
+                    "    ro.product.cpu.abilist) echo arm64-v8a,armeabi-v7a ;;",
+                    "  esac",
+                    "}",
+                    "set_perm() { chmod \"$4\" \"$1\"; }",
+                    "unset REPLACE REMOVE",
+                    "KSU=true",
+                    "export KSU",
+                    ". \"$MODPATH/customize.sh\"",
+                    "for target in $REPLACE; do exit 99; done",
+                    "for target in $REMOVE; do exit 98; done",
+                ]
+            )
+            env = {
+                "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                "KAORIOS_CONFIG_DIR": str(base / "existing_cfg"),
+                "KAORIOS_LEGACY_DIR": str(base / "legacy_cfg"),
+                "KAORIOS_BACKUP_DIR": str(backup_dir),
+            }
+            res = subprocess.run(
+                ["sh", "-c", harness, "installer.sh", str(modpath)],
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(res.returncode, 0, f"stderr: {res.stderr}\nstdout: {res.stdout}")
+            self.assertEqual((modpath / "helperctl").stat().st_mode & 0o777, 0o755)
+            self.assertEqual((modpath / "classes.dex").stat().st_mode & 0o777, 0o644)
+            self.assertEqual((modpath / "zygisk" / "arm64-v8a.so").stat().st_mode & 0o777, 0o644)
+            self.assertTrue((modpath / "data" / "hma.json").is_file())
+            self.assertFalse(backup_dir.exists())
 
 
 if __name__ == "__main__":

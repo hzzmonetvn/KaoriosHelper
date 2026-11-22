@@ -97,8 +97,10 @@ def build_zip(
                 if file.startswith(".tmp") or file.endswith(".tmp") or ".old" in file:
                     continue
 
-                # Add to ZIP preserving UNIX file attributes
+                # Add to ZIP preserving UNIX file type (S_IFREG), permissions, and DEFLATE
                 zinfo = zipfile.ZipInfo(str(rel_path))
+                zinfo.create_system = 3
+                zinfo.compress_type = zipfile.ZIP_DEFLATED
                 # Set permissions: 0755 for scripts/binaries, 0644 for others
                 if (
                     file.endswith(".sh")
@@ -107,13 +109,13 @@ def build_zip(
                     or file == "helperctl"
                     or "bin/" in str(rel_path)
                 ):
-                    zinfo.external_attr = 0o755 << 16
+                    zinfo.external_attr = 0o100755 << 16
                 else:
-                    zinfo.external_attr = 0o644 << 16
+                    zinfo.external_attr = 0o100644 << 16
 
                 # Copy content
                 with open(file_path, "rb") as f:
-                    zf.writestr(zinfo, f.read())
+                    zf.writestr(zinfo, f.read(), compress_type=zipfile.ZIP_DEFLATED)
 
     return zip_path
 

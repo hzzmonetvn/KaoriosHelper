@@ -9,7 +9,8 @@ MODDIR="${0%/*}"
 [ -f "$MODDIR/module.prop" ] || MODDIR="/data/adb/modules/kaorioshelper"
 DATA_DIR="$MODDIR/data"
 
-# If native compiled C++ helperctl binary is present, delegate directly to it
+# If native compiled helperctl binary is present, self-heal +x and delegate directly to it
+[ -f "$MODDIR/helperctl" ] && [ ! -x "$MODDIR/helperctl" ] && chmod 0755 "$MODDIR/helperctl" 2>/dev/null || true
 ARCH="$(uname -m 2>/dev/null || echo '')"
 if [ "$ARCH" = "aarch64" ] && [ -x "$MODDIR/bin/arm64-v8a/helperctl" ]; then
   exec "$MODDIR/bin/arm64-v8a/helperctl" "$@"
