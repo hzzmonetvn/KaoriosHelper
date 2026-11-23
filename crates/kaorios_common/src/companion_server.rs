@@ -246,57 +246,81 @@ pub fn handle_companion_session_with_dir(
         };
 
         if let Some(engine) = command.strip_prefix("fetch_state:") {
-            let state_bytes: Option<Vec<u8>> = if matches!(engine, "hma" | "pif" | "copg" | "tee") {
-                let enabled = match engine {
-                    "hma" | "pif" => !Path::new(&format!("{data_dir}/{engine}.disabled")).exists(),
-                    "copg" | "tee" => Path::new(&format!("{data_dir}/{engine}.enabled")).exists(),
-                    _ => false,
-                };
-                let tee_runtime_active =
-                    Path::new(&format!("{data_dir}/tee.runtime_active")).exists();
-                let boot_id = runtime_ack_boot_id();
-                let snapshot = if !enabled {
-                    RuntimeConfigSnapshot::default()
-                } else {
-                    match engine {
-                        "hma" => read_runtime_config_snapshot(data_dir, "hma", "hma.json")
-                            .unwrap_or_default(),
-                        "pif" => read_runtime_config_snapshot(data_dir, "pif", "pif.json")
-                            .unwrap_or_default(),
-                        "copg" => read_runtime_config_snapshot(data_dir, "copg", "spoof.json")
-                            .unwrap_or_default(),
-                        "tee" => {
-                            let bytes = NativeStore::open(data_dir)
-                                .and_then(|s| s.read("keybox.xml", true))
-                                .unwrap_or_default();
-                            RuntimeConfigSnapshot {
-                                bytes,
-                                boot_id: boot_id.clone(),
-                                ..Default::default()
+            let state_bytes: Option<Vec<u8>> =
+                if matches!(engine, "hma" | "pif" | "copg" | "tee" | "kaorios") {
+                    let boot_id = runtime_ack_boot_id();
+                    let (enabled, snapshot) = if engine == "kaorios" {
+                        let snap =
+                            read_runtime_config_snapshot(data_dir, "kaorios", "kaorios.json")
+                                .unwrap_or_else(|_| {
+                                    let bytes = NativeStore::open(data_dir)
+                                        .and_then(|s| s.read("kaorios.json", true))
+                                        .unwrap_or_default();
+                                    RuntimeConfigSnapshot {
+                                        bytes,
+                                        boot_id: boot_id.clone(),
+                                        ..Default::default()
+                                    }
+                                });
+                        (!snap.bytes.is_empty(), snap)
+                    } else {
+                        let enabled = match engine {
+                            "hma" | "pif" => {
+                                !Path::new(&format!("{data_dir}/{engine}.disabled")).exists()
                             }
-                        }
-                        _ => RuntimeConfigSnapshot::default(),
+                            "copg" | "tee" => {
+                                Path::new(&format!("{data_dir}/{engine}.enabled")).exists()
+                            }
+                            _ => false,
+                        };
+                        let snapshot = if !enabled {
+                            RuntimeConfigSnapshot::default()
+                        } else {
+                            match engine {
+                                "hma" => read_runtime_config_snapshot(data_dir, "hma", "hma.json")
+                                    .unwrap_or_default(),
+                                "pif" => read_runtime_config_snapshot(data_dir, "pif", "pif.json")
+                                    .unwrap_or_default(),
+                                "copg" => {
+                                    read_runtime_config_snapshot(data_dir, "copg", "spoof.json")
+                                        .unwrap_or_default()
+                                }
+                                "tee" => {
+                                    let bytes = NativeStore::open(data_dir)
+                                        .and_then(|s| s.read("keybox.xml", true))
+                                        .unwrap_or_default();
+                                    RuntimeConfigSnapshot {
+                                        bytes,
+                                        boot_id: boot_id.clone(),
+                                        ..Default::default()
+                                    }
+                                }
+                                _ => RuntimeConfigSnapshot::default(),
+                            }
+                        };
+                        (enabled, snapshot)
+                    };
+                    let tee_runtime_active =
+                        Path::new(&format!("{data_dir}/tee.runtime_active")).exists();
+                    if engine == "hma"
+                        && enabled
+                        && have_peercred
+                        && (cr.uid == 0 || resolve_live_uid(peer_pid) == Some(1000))
+                    {
+                        keepalive_server = true;
                     }
+                    let state = CompanionEngineState {
+                        enabled,
+                        tee_runtime_active,
+                        boot_id,
+                        snapshot,
+                    };
+                    serde_json::to_vec(&state)
+                        .ok()
+                        .filter(|b| b.len() <= MAX_COMPANION_PAYLOAD_BYTES)
+                } else {
+                    None
                 };
-                if engine == "hma"
-                    && enabled
-                    && have_peercred
-                    && (cr.uid == 0 || resolve_live_uid(peer_pid) == Some(1000))
-                {
-                    keepalive_server = true;
-                }
-                let state = CompanionEngineState {
-                    enabled,
-                    tee_runtime_active,
-                    boot_id,
-                    snapshot,
-                };
-                serde_json::to_vec(&state)
-                    .ok()
-                    .filter(|b| b.len() <= MAX_COMPANION_PAYLOAD_BYTES)
-            } else {
-                None
-            };
 
             match state_bytes {
                 Some(payload) => {

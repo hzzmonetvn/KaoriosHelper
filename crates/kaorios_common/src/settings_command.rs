@@ -19,6 +19,7 @@ pub const SCALAR_BOOLEANS: &[&str] = &[
     "kaorios_spoof_gms",
     "kaorios_spoof_vending",
     "kaorios_spoof_gameprops",
+    "kaorios_fakegapps_spoof",
     "kaorios_spoof_fakegapps",
     "kaorios_secure_flag",
     "kaorios_hide_app_work",
@@ -316,7 +317,8 @@ mod tests {
 
     #[test]
     fn settings_command_scalar_booleans_include_fakegapps() {
-        assert_eq!(SCALAR_BOOLEANS.len(), 19);
+        assert_eq!(SCALAR_BOOLEANS.len(), 20);
+        assert!(SCALAR_BOOLEANS.contains(&"kaorios_fakegapps_spoof"));
         assert!(SCALAR_BOOLEANS.contains(&"kaorios_spoof_fakegapps"));
         assert_eq!(SCALAR_BOOLEANS, crate::settings_adapter::SCALAR_BOOLEANS);
     }

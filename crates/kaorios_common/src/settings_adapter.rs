@@ -17,6 +17,7 @@ pub const SCALAR_BOOLEANS: &[&str] = &[
     "kaorios_spoof_gms",
     "kaorios_spoof_vending",
     "kaorios_spoof_gameprops",
+    "kaorios_fakegapps_spoof",
     "kaorios_spoof_fakegapps",
     "kaorios_secure_flag",
     "kaorios_hide_app_work",
@@ -632,20 +633,55 @@ pub fn adapt_settings(
     }
 }
 
+pub fn parse_kaorios_scalar_bool(kaorios_json: &str, key: &str) -> Option<bool> {
+    let trimmed = kaorios_json.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(trimmed) else {
+        return None;
+    };
+    let val = root
+        .get("settingsGlobal")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get(key))
+        .or_else(|| root.get(key))?;
+    if let Some(b) = val.as_bool() {
+        return Some(b);
+    }
+    if let Some(i) = val.as_i64() {
+        return Some(i != 0);
+    }
+    if let Some(s) = val.as_str() {
+        return parse_boolean(s).ok();
+    }
+    None
+}
+
+pub fn is_fakegapps_enabled_in_json(kaorios_json: &str) -> bool {
+    parse_kaorios_scalar_bool(kaorios_json, "kaorios_fakegapps_spoof") == Some(true)
+        || parse_kaorios_scalar_bool(kaorios_json, "kaorios_spoof_fakegapps") == Some(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn settings_adapter_scalar_booleans_include_fakegapps() {
-        assert_eq!(SCALAR_BOOLEANS.len(), 19);
+        assert_eq!(SCALAR_BOOLEANS.len(), 20);
+        assert!(SCALAR_BOOLEANS.contains(&"kaorios_fakegapps_spoof"));
         assert!(SCALAR_BOOLEANS.contains(&"kaorios_spoof_fakegapps"));
         let keys = settings_keys("kaorios").unwrap();
+        assert!(keys.iter().any(|k| k == "kaorios_fakegapps_spoof"));
         assert!(keys.iter().any(|k| k == "kaorios_spoof_fakegapps"));
 
         let mut vals = BTreeMap::new();
+        vals.insert("kaorios_fakegapps_spoof".to_string(), "1".to_string());
         vals.insert("kaorios_spoof_fakegapps".to_string(), "1".to_string());
         let out = adapt_settings("kaorios", "", &vals).unwrap().unwrap();
+        assert!(out.contains("\"kaorios_fakegapps_spoof\": \"1\""));
         assert!(out.contains("\"kaorios_spoof_fakegapps\": \"1\""));
+        assert!(is_fakegapps_enabled_in_json(&out));
     }
 }

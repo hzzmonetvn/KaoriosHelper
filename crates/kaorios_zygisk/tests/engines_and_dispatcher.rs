@@ -102,6 +102,30 @@ fn pif_normalizes_security_patch_and_tee_coexistence() {
 }
 
 #[test]
+fn fakegapps_enables_server_and_disables_pif_gms_vending() {
+    let dir = temp_dir("kaorios_fakegapps");
+    let d = dir.to_string_lossy().into_owned();
+    fs::write(dir.join("hma.disabled"), "").unwrap();
+    fs::write(
+        dir.join("kaorios.json"),
+        r#"{"schemaVersion":1,"settingsGlobal":{"kaorios_fakegapps_spoof":"1"}}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("pif.json"), r#"{"MODEL":"Pixel 8"}"#).unwrap();
+
+    let mut hma = HmaEngine::new(d.clone());
+    assert!(!hma.is_enabled());
+    assert!(hma.should_handle_server());
+
+    let mut pif = PifEngine::new(d);
+    assert!(!pif.should_handle_app("com.google.android.gms", 10100));
+    assert!(!pif.should_handle_app("com.google.android.gms.unstable", 10100));
+    assert!(!pif.should_handle_app("com.android.vending", 10100));
+
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn tee_validates_keybox_structure() {
     let dir = temp_dir("kaorios_tee");
     let d = dir.to_string_lossy().into_owned();

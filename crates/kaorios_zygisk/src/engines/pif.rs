@@ -17,6 +17,7 @@ use kaorios_common::runtime_snapshot::{
     bind_runtime_ack_to_snapshot, read_runtime_config_snapshot,
     write_runtime_ack_for_current_config, RuntimeConfigSnapshot,
 };
+use kaorios_common::settings_adapter::{is_fakegapps_enabled_in_json, parse_kaorios_scalar_bool};
 #[cfg_attr(not(target_os = "android"), allow(unused_imports))]
 use kaorios_common::{log_debug, log_error, log_info, log_warn, DEFAULT_DATA_DIR};
 use serde_json::{Map, Value};
@@ -815,6 +816,26 @@ impl Engine for PifEngine {
             if !self.companion_session.has_retained_socket() {
                 self.companion_session.pre_specialize(Some(api_ref));
             }
+            if let Some(kaorios_state) = self
+                .companion_session
+                .fetch_engine_state(Some(api_ref), "kaorios")
+            {
+                let kjson = &kaorios_state.snapshot.bytes;
+                let disabled_by_fakegapps = is_fakegapps_enabled_in_json(kjson);
+                let disabled_by_toggle = if process_name == "com.android.vending" {
+                    parse_kaorios_scalar_bool(kjson, "kaorios_spoof_vending") == Some(false)
+                } else {
+                    parse_kaorios_scalar_bool(kjson, "kaorios_spoof_gms") == Some(false)
+                };
+                if disabled_by_fakegapps || disabled_by_toggle {
+                    log_info!(
+                        "PIF: Skipping {process_name} (fakegapps={disabled_by_fakegapps}, toggle_disabled={disabled_by_toggle})"
+                    );
+                    self.prefetched_snapshot = None;
+                    self.companion_session.close_session();
+                    return false;
+                }
+            }
             let Some(state) = self
                 .companion_session
                 .fetch_engine_state(Some(api_ref), "pif")
@@ -831,6 +852,21 @@ impl Engine for PifEngine {
             self.cached_tee_active = Some(state.tee_runtime_active);
             self.prefetched_snapshot = Some(state.snapshot);
             return true;
+        }
+        if let Ok(kjson) = std::fs::read_to_string(format!("{}/kaorios.json", self.data_dir)) {
+            if is_fakegapps_enabled_in_json(&kjson) {
+                return false;
+            }
+            if process_name == "com.android.vending"
+                && parse_kaorios_scalar_bool(&kjson, "kaorios_spoof_vending") == Some(false)
+            {
+                return false;
+            }
+            if process_name != "com.android.vending"
+                && parse_kaorios_scalar_bool(&kjson, "kaorios_spoof_gms") == Some(false)
+            {
+                return false;
+            }
         }
         self.is_enabled()
     }

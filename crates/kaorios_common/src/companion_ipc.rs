@@ -79,7 +79,7 @@ pub fn is_syntactically_complete_command(buf: &str) -> bool {
         return true;
     }
     if let Some(engine) = buf.strip_prefix("fetch_state:") {
-        return matches!(engine, "hma" | "pif" | "copg" | "tee");
+        return matches!(engine, "hma" | "pif" | "copg" | "tee" | "kaorios");
     }
     if let Some(rest) = buf.strip_prefix("mount_cpu:") {
         if rest.contains(':') {

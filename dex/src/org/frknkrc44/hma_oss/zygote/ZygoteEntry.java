@@ -167,6 +167,14 @@ public class ZygoteEntry {
         return sPolicyManager.shouldHide(callingUid, callingPkgs, targetPkg);
     }
 
+    public static void setFakeGAppsEnabled(boolean enabled) {
+        FakeGAppsSignatureSpoofer.setEnabled(enabled);
+    }
+
+    public static boolean isFakeGAppsEnabled() {
+        return FakeGAppsSignatureSpoofer.isEnabled();
+    }
+
     public static HmaPolicyManager getPolicyManager() {
         return sPolicyManager;
     }

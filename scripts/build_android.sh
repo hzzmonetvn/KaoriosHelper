@@ -92,6 +92,11 @@ verify_shared_library() {
         exit 1
     fi
 
+    if "${readelf_bin}" --dyn-syms "${so_file}" | grep -w "UND" | grep -q "__clear_cache"; then
+        echo "ERROR: ${so_file} has undefined dynamic symbol __clear_cache!" >&2
+        exit 1
+    fi
+
     echo "✓ ${so_file} ELF verification passed!"
 }
 

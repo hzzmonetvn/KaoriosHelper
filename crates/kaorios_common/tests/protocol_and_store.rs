@@ -111,9 +111,9 @@ fn settings_adapter_maps_pif_copg_and_hma() {
     assert!(copg_out.contains("\"ro.build.id\": \"UP1A\""));
 
     assert!(!settings_keys("all").unwrap().is_empty());
-    assert!(settings_keys("kaorios")
-        .unwrap()
-        .contains(&"kaorios_spoof_fakegapps".to_string()));
+    let kaorios_keys = settings_keys("kaorios").unwrap();
+    assert!(kaorios_keys.contains(&"kaorios_fakegapps_spoof".to_string()));
+    assert!(kaorios_keys.contains(&"kaorios_spoof_fakegapps".to_string()));
 
     let mut dummy_ack = RuntimeAck {
         engine: "pif".to_string(),
@@ -206,6 +206,9 @@ fn companion_fetch_state_and_keepalive_over_socketpair() {
     let tee_state = session.fetch_engine_state(None, "tee").unwrap();
     assert!(tee_state.enabled);
     assert_eq!(tee_state.snapshot.bytes, "<Keybox/>");
+
+    let kaorios_state = session.fetch_engine_state(None, "kaorios").unwrap();
+    assert!(!kaorios_state.enabled);
 
     let hma_state = session.fetch_engine_state(None, "hma").unwrap();
     assert!(hma_state.enabled);

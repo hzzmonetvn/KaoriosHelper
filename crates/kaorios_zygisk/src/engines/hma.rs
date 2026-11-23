@@ -13,6 +13,7 @@ use kaorios_common::runtime_snapshot::{
     bind_runtime_ack_to_snapshot, read_runtime_config_snapshot,
     write_runtime_ack_for_current_config, RuntimeConfigSnapshot,
 };
+use kaorios_common::settings_adapter::is_fakegapps_enabled_in_json;
 use kaorios_common::{log_debug, log_error, log_info, log_warn, DEFAULT_DATA_DIR};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,6 +122,8 @@ pub struct HmaEngine {
     state: Mutex<HmaState>,
     ack_mutex: Mutex<()>,
     filter_count: AtomicU64,
+    hma_enabled: bool,
+    fakegapps_enabled: bool,
 }
 
 unsafe impl Send for HmaEngine {}
@@ -157,6 +160,8 @@ impl HmaEngine {
             state: Mutex::new(HmaState::default()),
             ack_mutex: Mutex::new(()),
             filter_count: AtomicU64::new(0),
+            hma_enabled: false,
+            fakegapps_enabled: false,
         }
     }
 
@@ -729,21 +734,31 @@ impl Engine for HmaEngine {
             if !cs.has_retained_socket() {
                 cs.pre_specialize(Some(api_ref));
             }
-            let Some(state) = cs.fetch_engine_state(Some(api_ref), "hma") else {
-                cs.close_session();
-                return false;
-            };
-            if !state.enabled {
+            let hma_state = cs.fetch_engine_state(Some(api_ref), "hma");
+            let kaorios_state = cs.fetch_engine_state(Some(api_ref), "kaorios");
+            self.hma_enabled = hma_state.as_ref().is_some_and(|s| s.enabled);
+            self.fakegapps_enabled = kaorios_state
+                .as_ref()
+                .is_some_and(|s| is_fakegapps_enabled_in_json(&s.snapshot.bytes));
+            if !self.hma_enabled && !self.fakegapps_enabled {
                 cs.close_session();
                 return false;
             }
             drop(cs);
-            if !state.snapshot.bytes.is_empty() {
-                let _ = self.load_config_from_snapshot(state.snapshot);
+            if self.hma_enabled {
+                if let Some(state) = hma_state {
+                    if !state.snapshot.bytes.is_empty() {
+                        let _ = self.load_config_from_snapshot(state.snapshot);
+                    }
+                }
             }
             return true;
         }
-        self.is_enabled()
+        self.hma_enabled = self.is_enabled();
+        self.fakegapps_enabled = std::fs::read_to_string(format!("{}/kaorios.json", self.data_dir))
+            .ok()
+            .is_some_and(|s| is_fakegapps_enabled_in_json(&s));
+        self.hma_enabled || self.fakegapps_enabled
     }
 
     fn on_load(&mut self, api: Option<ZygiskApi>, env: *mut JNIEnv) {
@@ -819,6 +834,18 @@ impl Engine for HmaEngine {
         if !self.dex_entrypoint.is_null() && !self.env.is_null() {
             unsafe {
                 let env = self.env;
+                let fg_mid =
+                    get_static_method_id(env, self.dex_entrypoint, "setFakeGAppsEnabled", "(Z)V");
+                if !exception_check_and_clear(env) && !fg_mid.is_null() {
+                    let fg_flag: std::os::raw::c_int = i32::from(self.fakegapps_enabled);
+                    (jni_vtbl(env).CallStaticVoidMethod)(env, self.dex_entrypoint, fg_mid, fg_flag);
+                    exception_check_and_clear(env);
+                    if self.fakegapps_enabled {
+                        log_info!("FakeGApps: Enabled signature spoofing in system_server");
+                    }
+                } else {
+                    exception_check_and_clear(env);
+                }
                 let init_mid =
                     get_static_method_id(env, self.dex_entrypoint, "init", "(Ljava/lang/String;)V");
                 let mut init_invoked = false;
@@ -853,7 +880,7 @@ impl Engine for HmaEngine {
                     }
                 }
 
-                if init_threw {
+                if init_threw && self.hma_enabled {
                     self.publish_hook_state_ack(
                         &snapshot,
                         0,
@@ -861,7 +888,7 @@ impl Engine for HmaEngine {
                         true,
                     );
                     close_companion = true;
-                } else if init_invoked && snapshot_supplied {
+                } else if init_invoked && snapshot_supplied && self.hma_enabled {
                     let mut hook_state = 3;
                     let get_state_mid =
                         get_static_method_id(env, self.dex_entrypoint, "getHookState", "()I");

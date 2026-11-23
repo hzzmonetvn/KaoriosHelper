@@ -515,10 +515,39 @@ public class PackageManagerHook implements InvocationHandler {
                 return result;
             }
 
+            if ("getPackageInfo".equals(methodName)
+                    || "getPackageInfoInternal".equals(methodName)
+                    || "getPackageInfoVersioned".equals(methodName)) {
+                Object result = invokeOriginal(method, args);
+                if (result != null && FakeGAppsSignatureSpoofer.isEnabled()) {
+                    long flags = extractPackageInfoFlags(methodName, args);
+                    return FakeGAppsSignatureSpoofer.spoofPackageInfo(result, flags);
+                }
+                return result;
+            }
+
             return invokeOriginal(method, args);
         } finally {
             IN_HOOK.set(Boolean.FALSE);
         }
+    }
+
+    private static long extractPackageInfoFlags(String methodName, Object[] args) {
+        if (args == null) {
+            return 0L;
+        }
+        int idx = "getPackageInfoInternal".equals(methodName) ? 2 : 1;
+        if (idx >= args.length) {
+            return 0L;
+        }
+        Object val = args[idx];
+        if (val instanceof Long) {
+            return ((Long) val).longValue();
+        }
+        if (val instanceof Integer) {
+            return ((Integer) val).intValue() & 0xFFFFFFFFL;
+        }
+        return 0L;
     }
 
     private Object invokeOriginal(Method method, Object[] args) throws Throwable {

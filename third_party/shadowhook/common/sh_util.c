@@ -211,8 +211,32 @@ int sh_util_mprotect(uintptr_t addr, size_t len, int prot) {
   return mprotect((void *)start, end - start, prot);
 }
 
+#if defined(__arm__)
+#include <sys/syscall.h>
+#endif
+
 void sh_util_clear_cache(uintptr_t addr, size_t len) {
+#if defined(__aarch64__)
+  if (len == 0) return;
+  uint64_t ctr_el0;
+  __asm__ __volatile__("mrs %0, ctr_el0" : "=r"(ctr_el0));
+  size_t icache_line_size = 4u << (ctr_el0 & 0xf);
+  size_t dcache_line_size = 4u << ((ctr_el0 >> 16) & 0xf);
+  uintptr_t end = addr + len;
+  for (uintptr_t p = addr & ~(dcache_line_size - 1); p < end; p += dcache_line_size) {
+    __asm__ __volatile__("dc cvau, %0" : : "r"(p) : "memory");
+  }
+  __asm__ __volatile__("dsb ish" : : : "memory");
+  for (uintptr_t p = addr & ~(icache_line_size - 1); p < end; p += icache_line_size) {
+    __asm__ __volatile__("ic ivau, %0" : : "r"(p) : "memory");
+  }
+  __asm__ __volatile__("dsb ish\n\tisb" : : : "memory");
+#elif defined(__arm__)
+  if (len == 0) return;
+  syscall(__ARM_NR_cacheflush, (void *)addr, (void *)(addr + len), 0);
+#else
   __builtin___clear_cache((char *)addr, (char *)(addr + len));
+#endif
 }
 
 bool sh_util_is_thumb32(uintptr_t target_addr) {
